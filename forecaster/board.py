@@ -256,6 +256,8 @@ def position_curve(effects, norm=None) -> list[float]:
 def annotate_turn(v, norm=None) -> str:
     v = float(v)
     if norm is not None and isinstance(norm, dict):
+        if "thresholds" in norm and norm.get("thresholds") is None:
+            return "="
         t = norm.get("thresholds")
         if isinstance(t, dict) and all(k in t for k in ("??", "?", "?!", "!", "!!")):
             if v <= float(t["??"]):

@@ -139,7 +139,7 @@ def split_items(ids, frac=0.5, seed=0):
     return (ordered[:k], ordered[k:])
 
 
-def fit_board_norm(effects_lists) -> dict:
+def fit_board_norm(effects_lists, method="quantile") -> dict:
     values: list[float] = []
     for lst in effects_lists or []:
         for e in lst or []:
@@ -153,6 +153,17 @@ def fit_board_norm(effects_lists) -> dict:
     mu = sum(values) / n
     var = sum((v - mu) ** 2 for v in values) / n
     sd = math.sqrt(var) if var > 0 else 0.0
+    if method == "z":
+        if sd == 0:
+            return {"mu": float(mu), "sd": float(sd), "n": n, "thresholds": None}
+        thresholds = {
+            "??": float(-2.0 * sd),
+            "?": float(-1.0 * sd),
+            "?!": float(-0.5 * sd),
+            "!": float(1.0 * sd),
+            "!!": float(2.0 * sd),
+        }
+        return {"mu": float(mu), "sd": float(sd), "n": n, "thresholds": thresholds}
     centered = sorted(v - mu for v in values)
     thresholds = {
         "??": float(_percentile(centered, 0.025)),

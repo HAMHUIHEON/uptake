@@ -19,6 +19,7 @@ uptake-manifest = "forecaster.batch:manifest_main"
 uptake-batch = "forecaster.batch:batch_main"
 uptake-analyze = "forecaster.analyze:main"
 uptake-calibrate = "forecaster.calibrate:main"
+uptake-predict = "forecaster.predict:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]
