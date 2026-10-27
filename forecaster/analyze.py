@@ -156,9 +156,17 @@ class Report:
         self.run = _load_json(out / "run.json", {})
         self.calls = _load_calls(out / "calls.jsonl")
         self.items = _item_records(out)
-        self.genres = _load_json(out / "report.json", {}).get("genre_report", {})
+        raw = self.batch if isinstance(self.batch, dict) else {}
+        if isinstance(raw.get("genres"), dict):
+            src = raw["genres"]
+        else:
+            src = raw.get("genre_report", {})
+        if not isinstance(src, dict):
+            src = {}
+        self.genres = {k: v for k, v in src.items()
+                       if isinstance(v, dict)}
         if not self.genres:
-            self.genres = {k: v for k, v in self.batch.items()
+            self.genres = {k: v for k, v in raw.items()
                            if isinstance(v, dict) and "n_conv" in v}
         self.problems: list[str] = []
         self.lines: list[str] = []
@@ -230,7 +238,11 @@ class Report:
     def q2(self):
         for genre in sorted(self.genres):
             entry = self.genres[genre]
-            other = entry["other_rate"][0]
+            raw_other = entry.get("other_rate", 0.0)
+            if isinstance(raw_other, (list, tuple)):
+                other = float(raw_other[0]) if len(raw_other) else 0.0
+            else:
+                other = float(raw_other)
             failed = entry["failed_rate"]
             v = "OK" if (other <= 0.20 and failed <= 0.05) else "PROBLEM"
             self.table.append((f"Q2/{genre}", "move coverage",
