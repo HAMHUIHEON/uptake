@@ -1,0 +1,9 @@
+{
+  "message": "Can you get the report to me by Friday? No pressure.",
+  "goal": {"acceptable_actions": ["comply", "proceed", "negotiate", "ask_clarification"],
+           "relationship_floor": 0, "face_ceiling": 1,
+           "core_meaning": "Friday would be good, but the deadline is flexible and it is fine to say if it is tight"},
+  "receiver": {"id": "newhire", "relationship": "team lead to a new hire in week two",
+               "power": "sender_higher", "channel": "slack",
+               "state": "wants to make a good first impression; unsure how strict deadlines are on this team"}
+}
