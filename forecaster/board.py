@@ -238,17 +238,37 @@ def _value_of(effect: dict) -> float:
     return float(rel) + float(face)
 
 
-def position_curve(effects) -> list[float]:
+def position_curve(effects, norm=None) -> list[float]:
     curve: list[float] = []
     total = 0.0
+    if norm is None:
+        for e in effects:
+            total += _value_of(e)
+            curve.append(total)
+        return curve
+    mu = float(norm.get("mu", 0.0)) if isinstance(norm, dict) else 0.0
     for e in effects:
-        total += _value_of(e)
+        total += _value_of(e) - mu
         curve.append(total)
     return curve
 
 
-def annotate_turn(v) -> str:
+def annotate_turn(v, norm=None) -> str:
     v = float(v)
+    if norm is not None and isinstance(norm, dict):
+        t = norm.get("thresholds")
+        if isinstance(t, dict) and all(k in t for k in ("??", "?", "?!", "!", "!!")):
+            if v <= float(t["??"]):
+                return "??"
+            if v <= float(t["?"]):
+                return "?"
+            if v <= float(t["?!"]):
+                return "?!"
+            if v >= float(t["!!"]):
+                return "!!"
+            if v >= float(t["!"]):
+                return "!"
+            return "="
     if v <= -1.5:
         return "??"
     if v <= -0.75:
