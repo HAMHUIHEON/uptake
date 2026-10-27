@@ -1,0 +1,19 @@
+{
+  "message": "Heads up: tomorrow's 10am sync moved to 2pm, same link.",
+  "goal": {
+    "acceptable_actions": [
+      "proceed",
+      "comply"
+    ],
+    "relationship_floor": 0,
+    "face_ceiling": 1,
+    "core_meaning": "The meeting time changed to 2pm; nothing else changed"
+  },
+  "receiver": {
+    "id": "team",
+    "relationship": "teammate",
+    "power": "equal",
+    "channel": "slack",
+    "state": "has a free afternoon"
+  }
+}

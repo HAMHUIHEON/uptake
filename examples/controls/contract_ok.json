@@ -1,0 +1,19 @@
+{
+  "message": "We reviewed the draft and have no further comments. Please send the final version for signature.",
+  "goal": {
+    "acceptable_actions": [
+      "proceed",
+      "comply"
+    ],
+    "relationship_floor": 0,
+    "face_ceiling": 1,
+    "core_meaning": "The draft is approved; send the final for signing"
+  },
+  "receiver": {
+    "id": "vendor",
+    "relationship": "client legal team to vendor account manager",
+    "power": "receiver_higher",
+    "channel": "email",
+    "state": "waiting for approval to close the deal"
+  }
+}

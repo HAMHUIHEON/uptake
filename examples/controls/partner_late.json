@@ -1,0 +1,18 @@
+{
+  "message": "Running 15 min late, so sorry! Order without me if you're hungry.",
+  "goal": {
+    "acceptable_actions": [
+      "proceed"
+    ],
+    "relationship_floor": 0,
+    "face_ceiling": 1,
+    "core_meaning": "I will be 15 minutes late; go ahead and order"
+  },
+  "receiver": {
+    "id": "partner",
+    "relationship": "long-term partner",
+    "power": "equal",
+    "channel": "text message",
+    "state": "relaxed, already at the restaurant"
+  }
+}

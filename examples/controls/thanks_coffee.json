@@ -1,0 +1,19 @@
+{
+  "message": "Thanks for covering my shift yesterday — coffee's on me this week!",
+  "goal": {
+    "acceptable_actions": [
+      "proceed",
+      "repair"
+    ],
+    "relationship_floor": 0,
+    "face_ceiling": 1,
+    "core_meaning": "I am grateful and want to return the favor"
+  },
+  "receiver": {
+    "id": "coworker",
+    "relationship": "coworkers on the same team",
+    "power": "equal",
+    "channel": "slack",
+    "state": "was happy to help and expects nothing"
+  }
+}
