@@ -15,15 +15,16 @@ moment — how your message will land — before you send it.
   A position curve tracks how the conversation is going, moves carry
   annotations (`!!`, `!`, `=`, `?!`, `?`, `??`), and turning points mark
   where things shifted.
-- **Test the next move.** Compare candidate replies on the same simulated
-  listener panel, and pick the one that lands best.
+- **Test the next move.** Compare a rewrite against the original on the same
+  simulated listener panel, with a paired confidence interval (multiple
+  candidate replies: in progress).
 
 ## How it works
 
 - **L0 input.** Plain text, or audio transcribed with speaker diarization
   via Muse Voice Transcribe (`muse-voice-transcribe-1.0`).
 - **L1 move record.** Every turn is tagged with one of 20+ move types
-  (e.g. proposing, conceding, hedging) using `muse-spark-1.3-contributor`.
+  (e.g. proposing, conceding, probing) using `muse-spark-1.3-contributor`.
 - **L3 simulated listener panel.** A panel of simulated listeners reads
   each turn from situational stances — roles and stakes in the situation,
   not personality types (`muse-spark-1.3-contributor`).
