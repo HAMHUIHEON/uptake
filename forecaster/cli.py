@@ -9,7 +9,7 @@ from .reader import DEFAULT_MODEL, MuseClient
 from .rewrite import run_rewrite
 from .runlog import save_readings
 from .types import Intent, Receiver
-from .v2 import STAKES, any_gap, false_alarm_rate, gaps
+from .v2 import STAKES, STAKE_TREE, any_gap, false_alarm_rate, gaps
 from .v2_run import load_case_v2, run_forecast_v2
 
 
@@ -118,9 +118,15 @@ def _bar(point: float, width: int = 20) -> str:
 
 def _print_v2_report(out: dict, goal=None) -> None:
     print(out["annotation"])
+    subs = out["score"].get("subs", {})
     for stake in STAKES + ["any"]:
         point, low, high = out["score"][stake]
         print(f"{stake:14s} {point:.3f} [{low:.3f}-{high:.3f}] {_bar(point)}")
+        if stake in STAKE_TREE:
+            for sub in STAKE_TREE[stake]:
+                if sub in subs:
+                    spoint, slow, shigh = subs[sub]
+                    print(f"  {sub:12s} {spoint:.3f} [{slow:.3f}-{shigh:.3f}] {_bar(spoint)}")
     if goal is not None:
         gap_readings = [r for r in out["readings"]
                         if any_gap(gaps(r, goal, out["same"].get((r.receiver_id, r.sample))))]
@@ -132,11 +138,12 @@ def _print_v2_report(out: dict, goal=None) -> None:
 
 
 def _run_v2(args) -> None:
-    message, goal, receiver = load_case_v2(args.case)
+    message, goal, receiver, stance_mix = load_case_v2(args.case)
     out = run_forecast_v2(MuseClient(), message, goal, receiver,
                           n=args.n, k=args.k, seed=args.seed,
                           model=args.model, judge_model=args.judge_model,
-                          b=args.b, max_workers=args.workers)
+                          b=args.b, max_workers=args.workers,
+                          stance_mix=stance_mix)
     _print_v2_report(out, goal)
 
 
@@ -159,11 +166,12 @@ def bench_main(argv=None) -> None:
     results = []
     for path in paths:
         name = os.path.splitext(os.path.basename(path))[0]
-        message, goal, receiver = load_case_v2(path)
+        message, goal, receiver, stance_mix = load_case_v2(path)
         out = run_forecast_v2(MuseClient(), message, goal, receiver,
                               n=args.n, k=args.k, seed=args.seed,
                               model=args.model, judge_model=args.judge_model,
-                              b=args.b, max_workers=args.workers)
+                              b=args.b, max_workers=args.workers,
+                              stance_mix=stance_mix)
         results.append(out["score"])
         point, low, high = out["score"]["any"]
         print(f"{name}: {out['annotation']} any={point:.3f} [{low:.3f}-{high:.3f}]")

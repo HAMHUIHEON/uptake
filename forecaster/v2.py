@@ -2,13 +2,23 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .labels import NEXT_ACTIONS, SPEECH_ACTS
 from .stats import cluster_bootstrap_ci, wilson_ci
 from .types import Receiver
 
 STAKES = ["outcome", "relationship", "face", "understanding"]
+
+STAKE_TREE = {
+    "outcome": ["money", "time", "deliverable", "commitment"],
+    "relationship": ["trust", "warmth", "continuity"],
+    "face": ["status", "autonomy", "competence"],
+    "understanding": ["facts", "intent", "obligations", "expectations"],
+}
+SUB_STAKES = [s for subs in STAKE_TREE.values() for s in subs]
+
+SUB_MIN, SUB_MAX = -2, 2
 
 REL_MIN, REL_MAX = -2, 2
 FACE_MIN, FACE_MAX = 0, 2
@@ -33,6 +43,8 @@ class Goal:
     relationship_floor: int = 0
     face_ceiling: int = 1
     core_meaning: str = ""
+    sub_stakes: list[str] = field(default_factory=list)
+    sub_floor: int = -1
 
     def __post_init__(self):
         if not self.acceptable_actions:
@@ -48,6 +60,13 @@ class Goal:
                 or not isinstance(self.face_ceiling, int)
                 or not (FACE_MIN <= self.face_ceiling <= FACE_MAX)):
             raise ValueError(f"bad face_ceiling: {self.face_ceiling!r}")
+        for s in self.sub_stakes:
+            if s not in SUB_STAKES:
+                raise ValueError(f"bad sub_stake: {s!r}")
+        if (isinstance(self.sub_floor, bool)
+                or not isinstance(self.sub_floor, int)
+                or not (SUB_MIN <= self.sub_floor <= SUB_MAX)):
+            raise ValueError(f"bad sub_floor: {self.sub_floor!r}")
 
 
 @dataclass
@@ -60,6 +79,7 @@ class ReadingV2:
     understood: str
     speech_act: str = ""
     trigger: str = ""
+    sub_effects: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.next_action not in NEXT_ACTIONS:
@@ -72,6 +92,18 @@ class ReadingV2:
                 or not isinstance(self.face_threat, int)
                 or not (FACE_MIN <= self.face_threat <= FACE_MAX)):
             raise ValueError(f"bad face_threat: {self.face_threat!r}")
+        cleaned: dict[str, int] = {}
+        for key, value in (self.sub_effects or {}).items():
+            if key not in SUB_STAKES:
+                continue
+            if isinstance(value, bool):
+                continue
+            try:
+                rounded = int(round(float(value)))
+            except (TypeError, ValueError):
+                continue
+            cleaned[key] = max(SUB_MIN, min(SUB_MAX, rounded))
+        self.sub_effects = cleaned
 
 
 def _extract_obj(raw: str) -> dict:
@@ -117,6 +149,19 @@ def parse_reading_v2(raw: str, receiver_id: str, sample: int,
     trigger = "" if trigger is None else str(trigger)
     if trigger not in message:
         trigger = ""
+    sub_effects: dict[str, int] = {}
+    raw_subs = data.get("sub_effects", {})
+    if isinstance(raw_subs, dict):
+        for key, value in raw_subs.items():
+            if key not in SUB_STAKES:
+                continue
+            if isinstance(value, bool):
+                continue
+            try:
+                rounded = int(round(float(value)))
+            except (TypeError, ValueError):
+                continue
+            sub_effects[key] = max(SUB_MIN, min(SUB_MAX, rounded))
     return ReadingV2(
         receiver_id=receiver_id,
         sample=sample,
@@ -126,6 +171,7 @@ def parse_reading_v2(raw: str, receiver_id: str, sample: int,
         understood=understood,
         speech_act=speech_act,
         trigger=trigger,
+        sub_effects=sub_effects,
     )
 
 
@@ -137,6 +183,14 @@ def gaps(reading: ReadingV2, goal: Goal,
         "face": reading.face_threat > goal.face_ceiling,
         "understanding": same_meaning is False,
     }
+
+
+def sub_gaps(reading: ReadingV2, goal: Goal) -> dict[str, bool]:
+    out: dict[str, bool] = {}
+    for sub in goal.sub_stakes:
+        value = (reading.sub_effects or {}).get(sub)
+        out[sub] = value is not None and value < goal.sub_floor
+    return out
 
 
 def any_gap(g: dict[str, bool]) -> bool:
@@ -181,6 +235,15 @@ def score_v2(readings: list[ReadingV2], goal: Goal,
             values_by_cluster.setdefault(r.receiver_id, []).append(
                 1.0 if gap else 0.0)
         out[stake] = cluster_bootstrap_ci(values_by_cluster, b=b, seed=seed)
+    subs: dict = {}
+    for sub in goal.sub_stakes:
+        values_by_cluster = {}
+        for r in readings:
+            gap = sub_gaps(r, goal).get(sub, False)
+            values_by_cluster.setdefault(r.receiver_id, []).append(
+                1.0 if gap else 0.0)
+        subs[sub] = cluster_bootstrap_ci(values_by_cluster, b=b, seed=seed)
+    out["subs"] = subs
     return out
 
 
@@ -195,7 +258,11 @@ def false_alarm_rate(results: list[dict]) -> tuple[float, float, float]:
     return (rate, low, high)
 
 
-def build_messages_v2(message: str, receiver: Receiver) -> list[dict]:
+def build_messages_v2(message: str, receiver: Receiver,
+                       subs: tuple[str, ...] | list[str] = ()) -> list[dict]:
+    keys = "next_action, relationship_shift, face_threat, understood, speech_act, trigger"
+    if subs:
+        keys += ", sub_effects"
     system = (
         "You are this receiver reading a message in context:\n"
         f"- relationship: {receiver.relationship}\n"
@@ -205,8 +272,7 @@ def build_messages_v2(message: str, receiver: Receiver) -> list[dict]:
         f"- stance: {receiver.stance}\n\n"
         "You do not know what the sender meant. "
         "Read the message below the way this receiver would, then reply with JSON only "
-        "(no other text) with keys next_action, relationship_shift, face_threat, "
-        "understood, speech_act, trigger.\n"
+        f"(no other text) with keys {keys}.\n"
         f"- next_action must be one of: {', '.join(NEXT_ACTIONS)}\n"
         "- relationship_shift must be an integer from -2 (much colder) to 2 (much warmer)\n"
         "- face_threat must be an integer from 0 (none) to 2 (severe)\n"
@@ -214,6 +280,13 @@ def build_messages_v2(message: str, receiver: Receiver) -> list[dict]:
         f"- speech_act must be one of: {', '.join(SPEECH_ACTS)}\n"
         "- trigger must be the exact phrase in the message that drove this reading"
     )
+    if subs:
+        names = ", ".join(subs)
+        system += (
+            "\n- sub_effects must be an object with exactly these keys: "
+            f"{names}, each an integer from -2 to 2 "
+            "= how the message moves that stake for the receiver"
+        )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": message},

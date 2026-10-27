@@ -45,7 +45,7 @@ def test_load_case_v2(tmp_path):
     p.write_text(json.dumps({"message": "hi", "goal": {"acceptable_actions": ["proceed"], "core_meaning": "hello"},
                              "receiver": {"id": "x", "relationship": "friends", "power": "equal",
                                           "channel": "text", "state": "relaxed"}}), encoding="utf-8")
-    msg, goal, rcv = load_case_v2(p)
+    msg, goal, rcv, _mix = load_case_v2(p)
     assert msg == "hi" and goal.acceptable_actions == ["proceed"] and rcv.id == "x"
 
 
