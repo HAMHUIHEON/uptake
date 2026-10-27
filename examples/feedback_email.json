@@ -1,0 +1,7 @@
+{
+  "message": "Thanks for the draft. I made a few changes — let's discuss.",
+  "intent": {"speech_act": "information", "next_action": "proceed", "tone": 1},
+  "receiver": {"id": "peer", "relationship": "colleague who wrote the draft, reviewed by a senior colleague",
+               "power": "sender_higher", "channel": "email",
+               "state": "spent two weeks on the draft and is anxious it was not good enough"}
+}

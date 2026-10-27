@@ -1,0 +1,7 @@
+{
+  "message": "Just checking in on the proposal we sent last week. Any thoughts?",
+  "intent": {"speech_act": "question", "next_action": "proceed", "tone": 1},
+  "receiver": {"id": "client", "relationship": "vendor sales rep to a client manager",
+               "power": "receiver_higher", "channel": "email",
+               "state": "busy, has not read the proposal yet, and the budget decision is still pending upstairs"}
+}

@@ -1,0 +1,7 @@
+{
+  "message": "I've been thinking maybe someone else should lead this project.",
+  "intent": {"speech_act": "probe", "next_action": "repair", "tone": 0},
+  "receiver": {"id": "manager", "relationship": "project lead to their manager",
+               "power": "receiver_higher", "channel": "1:1 chat",
+               "state": "has been considering reorganizing the team and wants a reason to move people"}
+}

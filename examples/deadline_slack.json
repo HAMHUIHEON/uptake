@@ -1,0 +1,7 @@
+{
+  "message": "Can you get the report to me by Friday? No pressure.",
+  "intent": {"speech_act": "request", "next_action": "comply", "tone": 0},
+  "receiver": {"id": "newhire", "relationship": "team lead to a new hire in week two",
+               "power": "sender_higher", "channel": "slack",
+               "state": "wants to make a good first impression; unsure how strict deadlines are on this team"}
+}

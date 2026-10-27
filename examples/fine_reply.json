@@ -1,0 +1,7 @@
+{
+  "message": "Fine.",
+  "intent": {"speech_act": "acceptance", "next_action": "proceed", "tone": 0},
+  "receiver": {"id": "partner", "relationship": "partner after a disagreement about weekend plans",
+               "power": "equal", "channel": "text message",
+               "state": "worried the other person is still upset about last night"}
+}
