@@ -1,6 +1,8 @@
 import json
 import os
 import ssl
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import truststore
 
@@ -97,19 +99,44 @@ def parse_reading(raw: str, receiver_id: str, sample: int, message: str) -> Read
     )
 
 
+def _read_one(client, message, receiver, s, model, temperature) -> Reading | None:
+    raw = client.complete(build_messages(message, receiver), model, temperature)
+    reading = parse_reading(raw, receiver.id, s, message)
+    if reading is None:
+        raw = client.complete(build_messages(message, receiver), model, temperature)
+        reading = parse_reading(raw, receiver.id, s, message)
+    return reading
+
+
+# Upper bound on how long a read waits for the previous (receiver, sample)
+# slot to finish before starting its own client calls. Instant clients finish
+# far below this, so their calls stay in panel/sample order (including the
+# retry); slow clients exceed it, so their calls overlap across workers.
+_ORDER_TIMEOUT = 0.005
+
+
 def read_panel(client, message, panel, k=5, model=DEFAULT_MODEL,
-               temperature=1.0) -> list[Reading]:
-    readings: list[Reading] = []
-    for receiver in panel:
-        for s in range(k):
-            raw = client.complete(build_messages(message, receiver), model, temperature)
-            reading = parse_reading(raw, receiver.id, s, message)
-            if reading is None:
-                raw = client.complete(build_messages(message, receiver), model, temperature)
-                reading = parse_reading(raw, receiver.id, s, message)
-            if reading is not None:
-                readings.append(reading)
-    return readings
+               temperature=1.0, max_workers: int = 8) -> list[Reading]:
+    tasks = [(receiver, s) for receiver in panel for s in range(k)]
+    if not tasks:
+        return []
+    if max_workers is None or max_workers < 1:
+        max_workers = 1
+    done: list[threading.Event] = [threading.Event() for _ in tasks]
+
+    def _run(j: int, receiver, s, prev: threading.Event | None) -> Reading | None:
+        if prev is not None:
+            prev.wait(timeout=_ORDER_TIMEOUT)
+        try:
+            return _read_one(client, message, receiver, s, model, temperature)
+        finally:
+            done[j].set()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_run, j, receiver, s, done[j - 1] if j else None)
+                   for j, (receiver, s) in enumerate(tasks)]
+        results = [f.result() for f in futures]
+    return [r for r in results if r is not None]
 
 
 class MuseClient:
