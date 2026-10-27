@@ -14,6 +14,7 @@ forecast-bench = "forecaster.cli:bench_main"
 uptake-transcribe = "forecaster.transcribe:main"
 uptake-moves = "forecaster.moves:main"
 uptake-eval-moves = "forecaster.eval_moves:main"
+uptake-board = "forecaster.board:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]
