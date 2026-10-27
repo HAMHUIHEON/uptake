@@ -2,6 +2,7 @@ import json
 import os
 import ssl
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import truststore
@@ -139,9 +140,30 @@ def read_panel(client, message, panel, k=5, model=DEFAULT_MODEL,
     return [r for r in results if r is not None]
 
 
+_RETRYABLE_NAMES = ("RateLimit", "Timeout", "Connection")
+
+
+def _retryable(exc: Exception) -> bool:
+    code = getattr(exc, "status_code", None)
+    if code is not None:
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            code = None
+    if code == 429 or (code is not None and code >= 500):
+        return True
+    name = type(exc).__name__
+    return any(part in name for part in _RETRYABLE_NAMES)
+
+
 class MuseClient:
     def __init__(self, api_key: str | None = None,
-                 base_url: str = BASE_URL):
+                 base_url: str = BASE_URL,
+                 meter=None,
+                 default_effort=None,
+                 max_retries: int = 5,
+                 create=None,
+                 sleep=time.sleep):
         key = api_key or os.environ.get("META_API_KEY") or os.environ.get("MODEL_API_KEY")
         from openai import OpenAI
         try:
@@ -151,11 +173,33 @@ class MuseClient:
         self.ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         http_client = httpx.Client(verify=self.ssl_context)
         self._client = OpenAI(api_key=key, base_url=base_url, http_client=http_client)
+        self.meter = meter
+        self.default_effort = default_effort
+        self.max_retries = max_retries
+        self._create = create if create is not None else self._client.chat.completions.create
+        self._sleep = sleep
 
     def complete(self, messages, model=DEFAULT_MODEL, temperature=1.0,
                  reasoning_effort=None) -> str:
+        if self.meter is not None:
+            self.meter.check()
+        if reasoning_effort is None:
+            reasoning_effort = self.default_effort
         kwargs: dict = {"model": model, "messages": messages, "temperature": temperature}
         if reasoning_effort is not None:
             kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
-        resp = self._client.chat.completions.create(**kwargs)
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = self._create(**kwargs)
+            except Exception as exc:
+                if not _retryable(exc) or attempt >= self.max_retries:
+                    raise
+                self._sleep(2 ** attempt)
+                continue
+            break
+        if self.meter is not None:
+            usage = getattr(resp, "usage", None)
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            self.meter.add(model, prompt_tokens, completion_tokens)
         return resp.choices[0].message.content or ""

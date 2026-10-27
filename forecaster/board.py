@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .labels import NEXT_ACTIONS
 from .panel import DEFAULT_MIX, build_panel
 from .reader import DEFAULT_MODEL
+from .usage import BudgetExceeded
 from .stats import cluster_bootstrap_ci, wilson_ci
 from .types import Receiver
 from .v2 import parse_reading_v2
@@ -92,6 +93,8 @@ def _read_one(client, turns, i, listener, receiver, s, model, window):
     for attempt in range(2):
         try:
             raw = client.complete(messages, model, 1.0)
+        except BudgetExceeded:
+            raise
         except Exception:
             continue
         reading = parse_reading_v2(raw, receiver.id, s, text)

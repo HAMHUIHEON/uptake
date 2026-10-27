@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .reader import DEFAULT_MODEL
+from .usage import BudgetExceeded
 
 MOVES = ["smalltalk", "inform", "ask", "propose", "counter", "concede", "accept", "reject",
          "probe", "appeal_need", "appeal_fairness", "empathize", "cooperate", "pressure",
@@ -149,6 +150,8 @@ def _tag_one(client, turns, i, model, window, reasoning_effort=None) -> MoveTag:
                                           reasoning_effort=reasoning_effort)
                 except TypeError:
                     raw = client.complete(messages, model, 0.0)
+        except BudgetExceeded:
+            raise
         except Exception:
             continue
         parsed = parse_moves(raw, turn.text)
