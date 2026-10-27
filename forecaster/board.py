@@ -87,12 +87,24 @@ def build_listener_messages(turns, i, listener: str, receiver: Receiver, window=
     ]
 
 
-def _read_one(client, turns, i, listener, receiver, s, model, window):
+def _call_board(client, messages, model, meta=None):
+    if meta is None or not getattr(client, "accepts_meta", False):
+        return client.complete(messages, model, 1.0)
+    try:
+        return client.complete(messages, model, 1.0, meta=meta)
+    except TypeError:
+        return client.complete(messages, model, 1.0)
+
+
+def _read_one(client, turns, i, listener, receiver, s, model, window,
+              item_id=""):
     messages = build_listener_messages(turns, i, listener, receiver, window)
     text = turns[i].text
+    meta = {"layer": "board", "item": item_id, "turn": i, "listener": listener,
+            "member": receiver.id, "stance": receiver.stance, "sample": s}
     for attempt in range(2):
         try:
-            raw = client.complete(messages, model, 1.0)
+            raw = _call_board(client, messages, model, meta)
         except BudgetExceeded:
             raise
         except Exception:
@@ -130,7 +142,7 @@ def _addressed_to(tag) -> str:
 
 def evaluate_turns(client, turns, n=3, k=1, model=DEFAULT_MODEL,
                    stance_mix=DEFAULT_MIX, window=6, b=1000, seed=0,
-                   max_workers=8, move_tags=None) -> list[dict]:
+                   max_workers=8, move_tags=None, item_id="") -> list[dict]:
     effects: list[dict] = []
     if not turns:
         return effects
@@ -160,7 +172,7 @@ def evaluate_turns(client, turns, n=3, k=1, model=DEFAULT_MODEL,
                 "index": i, "speaker": turn.speaker, "text": turn.text,
                 "listeners": [], "relationship": (0.0, 0.0, 0.0),
                 "face": (0.0, 0.0, 0.0), "action_dist": {},
-                "disagreement": 0.0, "n_readings": 0,
+                "disagreement": 0.0, "n_readings": 0, "readings": [],
             })
             continue
         tasks: list[tuple] = []
@@ -175,18 +187,27 @@ def evaluate_turns(client, turns, n=3, k=1, model=DEFAULT_MODEL,
                 for s in range(k):
                     tasks.append((listener, receiver, s))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(_read_one, client, turns, i, listener, receiver, s,
-                                   model, window)
+            futures = [pool.submit(_read_one, client, turns, i, listener,
+                                   receiver, s, model, window, item_id)
                        for listener, receiver, s in tasks]
             results = [f.result() for f in futures]
         readings = [r for r in results if r is not None]
         n_readings = len(readings)
+        readings_out = [
+            {"turn": i, "listener": listener, "member": receiver.id,
+             "stance": receiver.stance, "sample": s,
+             "next_action": r.next_action,
+             "relationship_shift": r.relationship_shift,
+             "face_threat": r.face_threat}
+            for (listener, receiver, s), r in zip(tasks, results)
+            if r is not None
+        ]
         if not readings:
             effects.append({
                 "index": i, "speaker": turn.speaker, "text": turn.text,
                 "listeners": listeners, "relationship": (0.0, 0.0, 0.0),
                 "face": (0.0, 0.0, 0.0), "action_dist": {},
-                "disagreement": 0.0, "n_readings": 0,
+                "disagreement": 0.0, "n_readings": 0, "readings": [],
             })
             continue
         rel_clusters: dict[str, list[float]] = {}
@@ -204,7 +225,7 @@ def evaluate_turns(client, turns, n=3, k=1, model=DEFAULT_MODEL,
             "listeners": listeners, "relationship": rel_ci, "face": face_ci,
             "action_dist": action_dist,
             "disagreement": _disagreement(action_dist, n_readings),
-            "n_readings": n_readings,
+            "n_readings": n_readings, "readings": readings_out,
         })
     return effects
 

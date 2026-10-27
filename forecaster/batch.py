@@ -72,9 +72,11 @@ def run_item(client, item, casino_index, out_dir, n=3, k=1,
         turns = load_turns(item["path"])
     tags = tag_conversation(client, turns, model=model,
                             max_workers=inner_workers,
-                            reasoning_effort=effort)
+                            reasoning_effort=effort,
+                            item_id=item.get("id", ""))
     effects = evaluate_turns(client, turns, n=n, k=k, model=model,
-                             max_workers=inner_workers, move_tags=tags)
+                             max_workers=inner_workers, move_tags=tags,
+                             item_id=item.get("id", ""))
     hits = forecast_hits(effects, tags)
     moves = [_tag_dict(t) for t in tags]
     n_turns = len(moves)
@@ -132,9 +134,37 @@ def _error(item, message: str) -> dict:
     return {"id": item.get("id"), "error": message}
 
 
+class BatchResults(list):
+    """run_batch return value: per-item summaries plus run-level flags."""
+
+    def __init__(self, summaries, health_stop=None):
+        super().__init__(summaries)
+        self.health_stop = health_stop
+
+
+def _health_status(finished: list[dict], health_after: int,
+                   max_failed_rate: float, max_error_rate: float):
+    if len(finished) < health_after or not finished:
+        return None
+    failed_rates = [r["failed_rate"] for r in finished
+                    if "failed_rate" in r]
+    mean_failed = (sum(failed_rates) / len(failed_rates)
+                   if failed_rates else 0.0)
+    error_share = (sum(1 for r in finished if "error" in r)
+                   / len(finished))
+    if mean_failed > max_failed_rate or error_share > max_error_rate:
+        return {"health_stop": True,
+                "n_finished": len(finished),
+                "mean_failed_rate": mean_failed,
+                "error_share": error_share}
+    return None
+
+
 def run_batch(manifest_items, client, out_dir, casino_path=None,
               workers=4, public_model=PUBLIC_MODEL,
-              private_model=PRIVATE_MODEL, **item_kwargs) -> list[dict]:
+              private_model=PRIVATE_MODEL, health_after=20,
+              max_failed_rate=0.20, max_error_rate=0.10,
+              **item_kwargs) -> list[dict]:
     item_kwargs.setdefault("public_model", public_model)
     item_kwargs.setdefault("private_model", private_model)
     items = list(manifest_items or [])
@@ -161,9 +191,11 @@ def run_batch(manifest_items, client, out_dir, casino_path=None,
     queue: deque[int] = deque(todo)
     in_flight: dict[cf.Future, int] = {}
     budget_hit = False
+    health_stop = None
     with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
         while queue or in_flight:
-            while queue and len(in_flight) < max_workers and not budget_hit:
+            while (queue and len(in_flight) < max_workers
+                   and not budget_hit and health_stop is None):
                 idx = queue.popleft()
                 in_flight[pool.submit(_run_one, idx)] = idx
             if not in_flight:
@@ -178,11 +210,20 @@ def run_batch(manifest_items, client, out_dir, casino_path=None,
                     budget_hit = True
                 except Exception as exc:  # noqa: BLE001 - batch continues
                     results[idx] = _error(items[idx], str(exc))
+            if health_stop is None:
+                finished = [results[i] for i in sorted(results)]
+                health_stop = _health_status(
+                    finished, health_after, max_failed_rate, max_error_rate)
             if budget_hit:
                 while queue:
                     idx = queue.popleft()
                     results[idx] = _error(items[idx], "budget")
-    return [results[i] for i in range(len(items))]
+            elif health_stop is not None:
+                while queue:
+                    idx = queue.popleft()
+                    results[idx] = _error(items[idx], "health_stop")
+    return BatchResults([results[i] for i in range(len(items))],
+                        health_stop=health_stop)
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float:
@@ -445,10 +486,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--b", type=int, default=1000)
     ap.add_argument("--public-model", default=PUBLIC_MODEL)
     ap.add_argument("--private-model", default=PRIVATE_MODEL)
+    ap.add_argument("--health-after", type=int, default=20)
+    ap.add_argument("--max-failed-rate", type=float, default=0.20)
+    ap.add_argument("--max-error-rate", type=float, default=0.10)
     return ap
 
 
+def _git_commit() -> str:
+    try:
+        import subprocess
+        proc = subprocess.run(["git", "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=10)
+        commit = (proc.stdout or "").strip()
+        return commit if proc.returncode == 0 and commit else "unknown"
+    except Exception:  # noqa: BLE001 - git may be unavailable
+        return "unknown"
+
+
 def batch_main(argv=None) -> None:
+    import sys
+    from datetime import datetime, timezone
+
+    from .trace import CallLog, LoggingClient
+
     ap = build_arg_parser()
     args = ap.parse_args(argv)
 
@@ -456,14 +516,38 @@ def batch_main(argv=None) -> None:
     items = _load_manifest(args.manifest)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_meta = {
+        "run_id": run_id,
+        "commit": _git_commit(),
+        "argv": list(sys.argv),
+        "settings": {
+            "n": args.n, "k": args.k, "effort": args.effort,
+            "workers": args.workers, "inner_workers": args.inner_workers,
+            "budget": args.budget, "seed": args.seed, "b": args.b,
+            "repeat_sample": args.repeat_sample,
+            "health_after": args.health_after,
+            "max_failed_rate": args.max_failed_rate,
+            "max_error_rate": args.max_error_rate,
+        },
+        "models": {"public_model": args.public_model,
+                   "private_model": args.private_model},
+    }
+    with open(out / "run.json", "w", encoding="utf-8") as f:
+        json.dump(run_meta, f, ensure_ascii=False, indent=2)
     meter = Meter(budget_usd=args.budget)
-    client = MuseClient(meter=meter, default_effort=args.effort)
+    inner = MuseClient(meter=meter, default_effort=args.effort)
+    client = LoggingClient(inner, CallLog(out / "calls.jsonl"), run_id)
     item_kwargs = {"n": args.n, "k": args.k, "effort": args.effort,
                    "inner_workers": args.inner_workers,
                    "public_model": args.public_model,
                    "private_model": args.private_model}
     summaries = run_batch(items, client, out, casino_path=args.casino,
-                          workers=args.workers, **item_kwargs)
+                          workers=args.workers,
+                          health_after=args.health_after,
+                          max_failed_rate=args.max_failed_rate,
+                          max_error_rate=args.max_error_rate,
+                          **item_kwargs)
     rep = genre_report(summaries, b=args.b, seed=args.seed)
     stab = repeat_check(items, client, out, sample=args.repeat_sample,
                         seed=args.seed, casino_path=args.casino,
@@ -481,8 +565,16 @@ def batch_main(argv=None) -> None:
     report["cost"] = total
     report["public_model"] = args.public_model
     report["private_model"] = args.private_model
+    report["run_id"] = run_id
+    report["errors"] = [{"id": s.get("id"), "error": s.get("error")}
+                        for s in summaries
+                        if isinstance(s, dict) and "error" in s]
+    health_stop = getattr(summaries, "health_stop", None)
+    report["health_stop"] = health_stop
     with open(out / "report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
+    if health_stop is not None:
+        print(f"health stop: {json.dumps(health_stop, ensure_ascii=False)}")
     for genre in sorted(g for g in rep if g != "n_errors"):
         entry = rep[genre]
         omean = entry["other_rate"][0]

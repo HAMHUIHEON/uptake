@@ -178,6 +178,19 @@ class MuseClient:
         self.max_retries = max_retries
         self._create = create if create is not None else self._client.chat.completions.create
         self._sleep = sleep
+        self._tls = threading.local()
+        self.last_stats = {"retries": 0, "status_codes": [],
+                           "prompt_tokens": 0, "completion_tokens": 0}
+
+    @property
+    def last_stats(self) -> dict:
+        return getattr(self._tls, "stats",
+                        {"retries": 0, "status_codes": [],
+                         "prompt_tokens": 0, "completion_tokens": 0})
+
+    @last_stats.setter
+    def last_stats(self, value: dict) -> None:
+        self._tls.stats = value
 
     def complete(self, messages, model=DEFAULT_MODEL, temperature=1.0,
                  reasoning_effort=None) -> str:
@@ -188,18 +201,36 @@ class MuseClient:
         kwargs: dict = {"model": model, "messages": messages, "temperature": temperature}
         if reasoning_effort is not None:
             kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
+        retries = 0
+        status_codes: list = []
         for attempt in range(self.max_retries + 1):
             try:
                 resp = self._create(**kwargs)
             except Exception as exc:
+                code = getattr(exc, "status_code", None)
+                try:
+                    code = int(code) if code is not None else None
+                except (TypeError, ValueError):
+                    code = None
+                if code is not None:
+                    status_codes.append(code)
                 if not _retryable(exc) or attempt >= self.max_retries:
+                    self.last_stats = {"retries": retries,
+                                       "status_codes": list(status_codes),
+                                       "prompt_tokens": 0,
+                                       "completion_tokens": 0}
                     raise
+                retries += 1
                 self._sleep(2 ** attempt)
                 continue
             break
+        usage = getattr(resp, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        self.last_stats = {"retries": retries,
+                           "status_codes": list(status_codes),
+                           "prompt_tokens": prompt_tokens,
+                           "completion_tokens": completion_tokens}
         if self.meter is not None:
-            usage = getattr(resp, "usage", None)
-            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
             self.meter.add(model, prompt_tokens, completion_tokens)
         return resp.choices[0].message.content or ""

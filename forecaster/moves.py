@@ -137,19 +137,41 @@ def parse_moves(raw, turn_text) -> dict | None:
     return {"moves": moves, "addressed_to": addressed, "quote": quote}
 
 
-def _tag_one(client, turns, i, model, window, reasoning_effort=None) -> MoveTag:
+def _call_tag(client, messages, model, reasoning_effort=None, meta=None):
+    use_meta = meta is not None and getattr(client, "accepts_meta", False)
+    if reasoning_effort is None:
+        if not use_meta:
+            return client.complete(messages, model, 0.0)
+        try:
+            return client.complete(messages, model, 0.0, meta=meta)
+        except TypeError:
+            return client.complete(messages, model, 0.0)
+    if not use_meta:
+        try:
+            return client.complete(messages, model, 0.0,
+                                  reasoning_effort=reasoning_effort)
+        except TypeError:
+            return client.complete(messages, model, 0.0)
+    try:
+        return client.complete(messages, model, 0.0,
+                               reasoning_effort=reasoning_effort, meta=meta)
+    except TypeError:
+        pass
+    try:
+        return client.complete(messages, model, 0.0, meta=meta)
+    except TypeError:
+        pass
+    return client.complete(messages, model, 0.0)
+
+
+def _tag_one(client, turns, i, model, window, reasoning_effort=None,
+             item_id="") -> MoveTag:
     messages = build_move_messages(turns, i, window)
     turn = turns[i]
+    meta = {"layer": "tag", "item": item_id, "turn": i}
     for _ in range(2):
         try:
-            if reasoning_effort is None:
-                raw = client.complete(messages, model, 0.0)
-            else:
-                try:
-                    raw = client.complete(messages, model, 0.0,
-                                          reasoning_effort=reasoning_effort)
-                except TypeError:
-                    raw = client.complete(messages, model, 0.0)
+            raw = _call_tag(client, messages, model, reasoning_effort, meta)
         except BudgetExceeded:
             raise
         except Exception:
@@ -168,12 +190,13 @@ def _tag_one(client, turns, i, model, window, reasoning_effort=None) -> MoveTag:
 
 
 def tag_conversation(client, turns, model=DEFAULT_MODEL, window=4, max_workers=8,
-                   reasoning_effort=None) -> list[MoveTag]:
+                   reasoning_effort=None, item_id="") -> list[MoveTag]:
     if not turns:
         return []
     workers = max_workers if isinstance(max_workers, int) and max_workers >= 1 else 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_tag_one, client, turns, i, model, window, reasoning_effort)
+        futures = [pool.submit(_tag_one, client, turns, i, model, window,
+                              reasoning_effort, item_id)
                    for i in range(len(turns))]
         results = [f.result() for f in futures]
     results.sort(key=lambda t: t.turn_index)

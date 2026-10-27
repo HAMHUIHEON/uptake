@@ -17,6 +17,7 @@ uptake-eval-moves = "forecaster.eval_moves:main"
 uptake-board = "forecaster.board:main"
 uptake-manifest = "forecaster.batch:manifest_main"
 uptake-batch = "forecaster.batch:batch_main"
+uptake-analyze = "forecaster.analyze:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]
