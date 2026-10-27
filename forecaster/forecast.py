@@ -1,0 +1,22 @@
+from . import score, stats
+from .panel import build_panel
+from .reader import DEFAULT_MODEL, read_panel
+from .types import Forecast, Intent, Receiver
+
+
+def run_forecast(client, message: str, intent: Intent, base_receiver: Receiver,
+                 n: int = 6, k: int = 5, seed: int = 0,
+                 model: str = DEFAULT_MODEL, b: int = 2000) -> Forecast:
+    panel = build_panel(base_receiver, n=n, seed=seed)
+    readings = read_panel(client, message, panel, k=k, model=model)
+    rate = score.miss_rate(readings, intent)
+    per = score.per_receiver_rates(readings, intent)
+    triggers = score.top_triggers(readings, intent)
+    values: dict[str, list[float]] = {}
+    for r in readings:
+        values.setdefault(r.receiver_id, []).append(
+            1.0 if score.is_miss(r, intent) else 0.0)
+    if not values:
+        return Forecast(message, intent, readings, rate, rate, rate, per, triggers)
+    _, low, high = stats.cluster_bootstrap_ci(values, b=b, seed=seed)
+    return Forecast(message, intent, readings, rate, low, high, per, triggers)
