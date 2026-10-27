@@ -56,8 +56,11 @@ def _tag_dict(t) -> dict:
 
 
 def run_item(client, item, casino_index, out_dir, n=3, k=1,
-             effort="low", inner_workers=8) -> dict:
-    model = model_for(item)
+             effort="low", inner_workers=8,
+             public_model=PUBLIC_MODEL,
+             private_model=PRIVATE_MODEL) -> dict:
+    model = model_for(item, public_model=public_model,
+                      private_model=private_model)
     effort = _normalize_effort(effort)
     kind = item.get("kind", "turns")
     gold = None
@@ -130,7 +133,10 @@ def _error(item, message: str) -> dict:
 
 
 def run_batch(manifest_items, client, out_dir, casino_path=None,
-              workers=4, **item_kwargs) -> list[dict]:
+              workers=4, public_model=PUBLIC_MODEL,
+              private_model=PRIVATE_MODEL, **item_kwargs) -> list[dict]:
+    item_kwargs.setdefault("public_model", public_model)
+    item_kwargs.setdefault("private_model", private_model)
     items = list(manifest_items or [])
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -423,7 +429,7 @@ def _load_manifest(path) -> list[dict]:
     return items
 
 
-def batch_main(argv=None) -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="uptake-batch")
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--out", required=True)
@@ -437,15 +443,25 @@ def batch_main(argv=None) -> None:
     ap.add_argument("--repeat-sample", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--b", type=int, default=1000)
+    ap.add_argument("--public-model", default=PUBLIC_MODEL)
+    ap.add_argument("--private-model", default=PRIVATE_MODEL)
+    return ap
+
+
+def batch_main(argv=None) -> None:
+    ap = build_arg_parser()
     args = ap.parse_args(argv)
 
+    print(f"public_model={args.public_model} private_model={args.private_model}")
     items = _load_manifest(args.manifest)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     meter = Meter(budget_usd=args.budget)
     client = MuseClient(meter=meter, default_effort=args.effort)
     item_kwargs = {"n": args.n, "k": args.k, "effort": args.effort,
-                   "inner_workers": args.inner_workers}
+                   "inner_workers": args.inner_workers,
+                   "public_model": args.public_model,
+                   "private_model": args.private_model}
     summaries = run_batch(items, client, out, casino_path=args.casino,
                           workers=args.workers, **item_kwargs)
     rep = genre_report(summaries, b=args.b, seed=args.seed)
@@ -463,6 +479,8 @@ def batch_main(argv=None) -> None:
     report["usage"] = spend
     report["by_model"] = spend
     report["cost"] = total
+    report["public_model"] = args.public_model
+    report["private_model"] = args.private_model
     with open(out / "report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     for genre in sorted(g for g in rep if g != "n_errors"):
