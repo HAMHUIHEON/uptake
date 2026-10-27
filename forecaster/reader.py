@@ -1,5 +1,8 @@
 import json
 import os
+import ssl
+
+import truststore
 
 from .labels import NEXT_ACTIONS, SPEECH_ACTS, TONE_MAX, TONE_MIN
 from .types import Reading, Receiver
@@ -114,7 +117,13 @@ class MuseClient:
                  base_url: str = BASE_URL):
         key = api_key or os.environ.get("META_API_KEY") or os.environ.get("MODEL_API_KEY")
         from openai import OpenAI
-        self._client = OpenAI(api_key=key, base_url=base_url)
+        try:
+            import httpx
+        except ModuleNotFoundError:
+            import httpx2 as httpx
+        self.ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        http_client = httpx.Client(verify=self.ssl_context)
+        self._client = OpenAI(api_key=key, base_url=base_url, http_client=http_client)
 
     def complete(self, messages, model=DEFAULT_MODEL, temperature=1.0) -> str:
         resp = self._client.chat.completions.create(
