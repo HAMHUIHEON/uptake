@@ -12,7 +12,7 @@ DEAL_ACTIONS = {"Submit-Deal", "Accept-Deal", "Reject-Deal", "Walk-Away"}
 SPEAKERS = {"mturk_agent_1": "A", "mturk_agent_2": "B"}
 
 
-def load_casino(path, limit=None, seed=0) -> list[dict]:
+def load_casino(path, limit=None, seed=0, exclude_ids=()) -> list[dict]:
     with open(Path(path), encoding="utf-8") as f:
         data = json.load(f)
     dialogues: list[dict] = []
@@ -52,6 +52,9 @@ def load_casino(path, limit=None, seed=0) -> list[dict]:
         if not turns:
             continue
         dialogues.append({"dialogue_id": dialogue_id, "turns": turns, "gold": gold})
+    excluded = set(exclude_ids or ())
+    if excluded:
+        dialogues = [d for d in dialogues if d.get("dialogue_id") not in excluded]
     if limit is not None and len(dialogues) > limit:
         rng = random.Random(seed)
         dialogues = rng.sample(dialogues, limit)

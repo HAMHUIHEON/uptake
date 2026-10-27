@@ -152,7 +152,10 @@ class MuseClient:
         http_client = httpx.Client(verify=self.ssl_context)
         self._client = OpenAI(api_key=key, base_url=base_url, http_client=http_client)
 
-    def complete(self, messages, model=DEFAULT_MODEL, temperature=1.0) -> str:
-        resp = self._client.chat.completions.create(
-            model=model, messages=messages, temperature=temperature)
+    def complete(self, messages, model=DEFAULT_MODEL, temperature=1.0,
+                 reasoning_effort=None) -> str:
+        kwargs: dict = {"model": model, "messages": messages, "temperature": temperature}
+        if reasoning_effort is not None:
+            kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
+        resp = self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""

@@ -5,6 +5,21 @@ import argparse
 import json
 import random
 from collections import Counter
+from pathlib import Path
+
+from .moves import CASINO_MAP
+
+CASINO_SCHEME = set(CASINO_MAP.values())
+
+
+def project(pred: list[set], scheme: set[str], other: str = "other") -> list[set]:
+    out: list[set] = []
+    for labels in pred:
+        kept = {lbl for lbl in labels if lbl in scheme}
+        if not kept:
+            kept = {other}
+        out.append(kept)
+    return out
 
 
 def prf(pred: list[set], gold: list[set]) -> dict:
@@ -130,20 +145,39 @@ def main(argv=None) -> None:
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--exclude", default=None)
+    ap.add_argument("--effort", default="low")
+    ap.add_argument("--no-project", action="store_true")
     args = ap.parse_args(argv)
 
-    dialogues = load_casino(args.casino, limit=args.n, seed=args.seed)
+    exclude_ids: set = set()
+    if args.exclude:
+        with open(Path(args.exclude), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict) and "dialogue_id" in rec:
+                    exclude_ids.add(rec["dialogue_id"])
+    dialogues = load_casino(args.casino, limit=args.n, seed=args.seed,
+                             exclude_ids=exclude_ids)
     client = MuseClient()
     per_dialogue: list[tuple[list[set], list[set]]] = []
     records: list[dict] = []
     for d in dialogues:
         tags = tag_conversation(client, d["turns"], model=args.model,
-                                max_workers=args.workers)
-        pred = [set(t.moves) for t in tags]
+                                max_workers=args.workers,
+                                reasoning_effort=args.effort)
+        raw_pred = [set(t.moves) for t in tags]
         gold = d["gold"]
+        pred = raw_pred if args.no_project else project(raw_pred, CASINO_SCHEME)
         per_dialogue.append((pred, gold))
         records.append({"dialogue_id": d["dialogue_id"],
-                        "pred": [sorted(s) for s in pred],
+                        "pred": [sorted(s) for s in raw_pred],
                         "gold": [sorted(s) for s in gold]})
     pred_all, gold_all = _pooled(per_dialogue)
     table = prf(pred_all, gold_all)

@@ -11,7 +11,7 @@ TURNS = [Turn("A", "Hi! How's the trip prep going?"), Turn("B", "Good. I really 
 
 
 def test_move_sets():
-    assert len(MOVES) == 20 and MOVES[-1] == "other"
+    assert len(MOVES) == 21 and MOVES[-1] == "other"
     assert set(CASINO_MAP.values()) <= set(MOVES)
     assert set(CASINO_MAP) == {"small-talk", "self-need", "other-need", "no-need", "elicit-pref", "uv-part",
                                "vouch-fair", "showing-empathy", "promote-coordination", "non-strategic"}
