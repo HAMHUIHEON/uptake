@@ -60,10 +60,11 @@ def test_forecast_hits_and_score():
     tags = [MoveTag(0, "A", ["challenge"]), MoveTag(1, "B", ["challenge"]), MoveTag(2, "A", ["propose"]),
             MoveTag(3, "B", ["accept"])]
     hits = forecast_hits(eff, tags)
-    assert [(h["index"], h["predicted"], h["hit"]) for h in hits] == [(0, "retaliate", True), (1, "proceed", True),
+    assert [(h["index"], h["predicted"], h["hit"]) for h in hits] == [(0, "retaliate", True), (1, "proceed", False),
                                                                       (2, "ask_clarification", False)]
+    assert [h["actual_class"] for h in hits] == ["retaliate", "negotiate", "comply"]
     assert hits[0]["p_actual"] == pytest.approx(0.6) and hits[2]["p_actual"] == pytest.approx(0.5)
     s = forecast_score(hits, b=200, seed=0)
-    assert s["hit_rate"] == pytest.approx(2 / 3)
+    assert s["hit_rate"] == pytest.approx(1 / 3)
     lo, hi = s["hit_rate_ci"]
-    assert lo <= 2 / 3 <= hi and "baseline" in s
+    assert lo <= 1 / 3 <= hi and "baseline" in s

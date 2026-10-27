@@ -28,6 +28,33 @@ ACTION_TO_MOVES = {
     "repair": {"repair", "empathize", "praise"},
 }
 
+MOVE_PRIORITY: list[tuple[str, str]] = [
+    ("reject", "refuse"),
+    ("accept", "comply"),
+    ("concede", "comply"),
+    ("counter", "negotiate"),
+    ("propose", "negotiate"),
+    ("pressure", "escalate"),
+    ("challenge", "retaliate"),
+    ("repair", "repair"),
+    ("ask", "ask_clarification"),
+    ("probe", "ask_clarification"),
+    ("appeal_need", "negotiate"),
+    ("appeal_fairness", "negotiate"),
+    ("empathize", "repair"),
+    ("praise", "repair"),
+    ("deflect", "withdraw"),
+]
+
+
+def actual_class(moves: list[str]) -> str:
+    present = set(moves or [])
+    for move, cls in MOVE_PRIORITY:
+        if move in present:
+            return cls
+    return "proceed"
+
+
 _SPARK = "▁▂▃▄▅▆▇█"
 
 
@@ -90,9 +117,17 @@ def _disagreement(action_dist: dict, n_readings: int) -> float:
     return max(0.0, min(1.0, entropy / denom))
 
 
+def _addressed_to(tag) -> str:
+    if isinstance(tag, dict):
+        addr = tag.get("addressed_to", "")
+    else:
+        addr = getattr(tag, "addressed_to", "")
+    return addr if isinstance(addr, str) else str(addr)
+
+
 def evaluate_turns(client, turns, n=3, k=1, model=DEFAULT_MODEL,
                    stance_mix=DEFAULT_MIX, window=6, b=1000, seed=0,
-                   max_workers=8) -> list[dict]:
+                   max_workers=8, move_tags=None) -> list[dict]:
     effects: list[dict] = []
     if not turns:
         return effects
@@ -102,8 +137,21 @@ def evaluate_turns(client, turns, n=3, k=1, model=DEFAULT_MODEL,
     for t in turns:
         if t.speaker not in seen:
             seen.append(t.speaker)
+    addr_by_index: dict[int, str] = {}
+    if move_tags:
+        for t in move_tags:
+            if isinstance(t, dict):
+                idx = t.get("turn_index")
+            else:
+                idx = getattr(t, "turn_index", None)
+            if isinstance(idx, int) and idx not in addr_by_index:
+                addr_by_index[idx] = _addressed_to(t)
     for i, turn in enumerate(turns):
         listeners = [s for s in seen if s != turn.speaker and s != "unknown"]
+        if move_tags:
+            addr = addr_by_index.get(i, "")
+            if addr and addr != turn.speaker and addr in seen and addr != "unknown":
+                listeners = [addr]
         if not listeners:
             effects.append({
                 "index": i, "speaker": turn.speaker, "text": turn.text,
@@ -258,17 +306,16 @@ def forecast_hits(effects, move_tags) -> list[dict]:
         if not actual:
             continue
         predicted = sorted(dist, key=lambda a: (-dist[a], a))[0]
-        actual_set = set(actual)
-        pred_moves = ACTION_TO_MOVES.get(predicted, set())
-        hit = bool(actual_set & pred_moves)
-        p_actual = sum(
-            share for a, share in dist.items()
-            if actual_set & ACTION_TO_MOVES.get(a, set())
-        )
+        cls = actual_class(list(actual))
+        hit = (predicted == cls)
+        p_actual = float(dist.get(cls, 0.0))
+        n_readings = int(e.get("n_readings", 0) or 0)
         hits.append({
             "index": i, "predicted": predicted,
-            "actual_moves": list(actual), "hit": hit,
-            "p_actual": float(p_actual),
+            "actual_moves": list(actual), "actual_class": cls,
+            "hit": hit, "p_actual": float(p_actual),
+            "n_readings": n_readings,
+            "action_dist": dict(dist),
         })
     return hits
 
@@ -306,13 +353,58 @@ def forecast_score(hits, b=1000, seed=0) -> dict:
         reps.append(sum(sample) / n)
     reps.sort()
     plo, phi = _percentile(reps, 0.025), _percentile(reps, 0.975)
-    counts: Counter = Counter(h["predicted"] for h in hits)
-    common = sorted(counts, key=lambda a: (-counts[a], a))[0]
-    common_moves = ACTION_TO_MOVES.get(common, set())
-    baseline = sum(1 for h in hits if set(h["actual_moves"]) & common_moves) / n
+    if hits and any("actual_class" in h for h in hits):
+        actual_counts: Counter = Counter(h.get("actual_class", "proceed") for h in hits)
+        majority = sorted(actual_counts, key=lambda a: (-actual_counts[a], a))[0]
+        baseline = actual_counts[majority] / n
+        baseline_action = f"always_{majority}"
+    else:
+        counts: Counter = Counter(h["predicted"] for h in hits)
+        common = sorted(counts, key=lambda a: (-counts[a], a))[0]
+        common_moves = ACTION_TO_MOVES.get(common, set())
+        baseline = sum(1 for h in hits if set(h.get("actual_moves", [])) & common_moves) / n
+        baseline_action = f"always_{common}"
     return {"hit_rate": hit_rate, "hit_rate_ci": (lo, hi),
             "p_actual_mean": p_mean, "p_actual_ci": (plo, phi),
-            "baseline": baseline, "baseline_action": f"always_{common}", "n": n}
+            "baseline": baseline, "baseline_action": baseline_action, "n": n}
+
+
+def forecast_skill(hits, b=1000, seed=0, alpha=0.5) -> dict:
+    n = len(hits)
+    if n == 0:
+        return {"skill_mean": 0.0, "skill_ci": (0.0, 0.0),
+                "n": 0, "majority_class": "proceed",
+                "majority_hit_rate": 0.0}
+    k_actions = len(NEXT_ACTIONS)
+    actuals = [h.get("actual_class", "proceed") for h in hits]
+    counts_all: Counter = Counter(actuals)
+    majority = sorted(counts_all, key=lambda a: (-counts_all[a], a))[0]
+    majority_hit_rate = counts_all[majority] / n
+    gains: list[float] = []
+    for pos, h in enumerate(hits):
+        actual = h.get("actual_class", "proceed")
+        dist = h.get("action_dist") or {}
+        if dist:
+            share = float(dist.get(actual, 0.0))
+        else:
+            share = float(h.get("p_actual", 0.0))
+        nn = int(h.get("n_readings", 0) or 0)
+        p_model = (share * nn + alpha) / (nn + k_actions * alpha)
+        loo_count = sum(1 for j, hh in enumerate(hits)
+                        if j != pos and hh.get("actual_class") == actual)
+        p_clim = (loo_count + alpha) / ((n - 1) + k_actions * alpha)
+        gains.append(math.log(p_model) - math.log(p_clim))
+    skill_mean = sum(gains) / n
+    rng = random.Random(seed)
+    reps: list[float] = []
+    for _ in range(max(1, b)):
+        sample = [gains[rng.randrange(n)] for _ in range(n)]
+        reps.append(sum(sample) / n)
+    reps.sort()
+    slo, shi = _percentile(reps, 0.025), _percentile(reps, 0.975)
+    return {"skill_mean": skill_mean, "skill_ci": (slo, shi),
+            "n": n, "majority_class": majority,
+            "majority_hit_rate": majority_hit_rate}
 
 
 def _spark_char(pos: float, mn: float, mx: float) -> str:
@@ -342,25 +434,8 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
 
     turns = load_turns(args.turns)
-    effects = evaluate_turns(
-        MuseClient(), turns, n=args.n, k=args.k, model=args.model,
-        window=args.window, b=args.b, seed=args.seed,
-        max_workers=args.workers,
-    )
-    curve = position_curve(effects)
-    mn = min(curve) if curve else 0.0
-    mx = max(curve) if curve else 0.0
-    out_turns: list[dict] = []
-    for e, pos in zip(effects, curve):
-        value = _value_of(e)
-        ann = annotate_turn(value)
-        out_turns.append({**e, "value": value, "annotation": ann,
-                          "position": pos})
-    tp = turning_point(effects)
-    ds = disagreement_spike(effects)
-    forecast = None
+    tags: list[MoveTag] = []
     if args.moves:
-        tags: list[MoveTag] = []
         with open(args.moves, encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
@@ -374,10 +449,32 @@ def main(argv=None) -> None:
                     quote=obj.get("quote", ""),
                     failed=bool(obj.get("failed", False)),
                 ))
+    effects = evaluate_turns(
+        MuseClient(), turns, n=args.n, k=args.k, model=args.model,
+        window=args.window, b=args.b, seed=args.seed,
+        max_workers=args.workers, move_tags=tags or None,
+    )
+    curve = position_curve(effects)
+    mn = min(curve) if curve else 0.0
+    mx = max(curve) if curve else 0.0
+    out_turns: list[dict] = []
+    for e, pos in zip(effects, curve):
+        value = _value_of(e)
+        ann = annotate_turn(value)
+        out_turns.append({**e, "value": value, "annotation": ann,
+                          "position": pos})
+    tp = turning_point(effects)
+    ds = disagreement_spike(effects)
+    forecast = None
+    skill = None
+    if tags:
         hits = forecast_hits(effects, tags)
-        forecast = forecast_score(hits) if hits else None
+        if hits:
+            forecast = forecast_score(hits)
+            skill = forecast_skill(hits)
     board = {"turns": out_turns, "turning_point": tp,
-             "disagreement_spike": ds, "forecast": forecast}
+             "disagreement_spike": ds, "forecast": forecast,
+             "skill": skill}
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(board, f, ensure_ascii=False, indent=2)
     for e in out_turns:
@@ -385,3 +482,12 @@ def main(argv=None) -> None:
         print(f"#{e['index']} {e['speaker']} {e['annotation']} "
               f"{e['value']:+.2f} {e['position']:+.2f} "
               f"{_spark_char(e['position'], mn, mx)} {text}")
+    if forecast is not None:
+        lo, hi = forecast["hit_rate_ci"]
+        print(f"Forecast hit rate: {forecast['hit_rate']:.2f} [{lo:.2f}-{hi:.2f}] "
+              f"(n={forecast['n']}, baseline {forecast['baseline_action']} {forecast['baseline']:.2f})")
+    if skill is not None:
+        slo, shi = skill["skill_ci"]
+        print(f"Forecast skill vs climatology: {skill['skill_mean']:+.3f} [{slo:+.3f}-{shi:+.3f}] "
+              f"(n={skill['n']}, majority {skill['majority_class']} {skill['majority_hit_rate']:.2f})")
+        print("skill > 0 with CI above 0 = better than climatology")
