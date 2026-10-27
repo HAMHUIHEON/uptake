@@ -11,6 +11,7 @@ dependencies = ["openai", "pytest", "truststore"]
 [project.scripts]
 forecast = "forecaster.cli:main"
 forecast-bench = "forecaster.cli:bench_main"
+uptake-transcribe = "forecaster.transcribe:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]

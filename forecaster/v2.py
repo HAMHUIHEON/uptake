@@ -14,7 +14,7 @@ STAKE_TREE = {
     "outcome": ["money", "time", "deliverable", "commitment"],
     "relationship": ["trust", "warmth", "continuity"],
     "face": ["status", "autonomy", "competence"],
-    "understanding": ["facts", "intent", "obligations", "expectations"],
+    "understanding": ["facts", "intent", "obligations"],
 }
 SUB_STAKES = [s for subs in STAKE_TREE.values() for s in subs]
 

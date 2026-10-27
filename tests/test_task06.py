@@ -25,7 +25,7 @@ def test_build_panel_mix(base_receiver):
 
 def test_stake_tree():
     assert list(STAKE_TREE) == ["outcome", "relationship", "face", "understanding"]
-    assert "autonomy" in SUB_STAKES and "money" in SUB_STAKES and len(SUB_STAKES) == 14
+    assert "autonomy" in SUB_STAKES and "money" in SUB_STAKES and len(SUB_STAKES) == 13
     with pytest.raises(ValueError):
         Goal(acceptable_actions=["comply"], sub_stakes=["vibes"])
 
