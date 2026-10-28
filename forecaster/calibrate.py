@@ -175,13 +175,16 @@ def fit_board_norm(effects_lists, method="quantile") -> dict:
     return {"mu": float(mu), "sd": float(sd), "n": n, "thresholds": thresholds}
 
 
-_SKIP_NAMES = {"report.json", "run.json", "calibration.json", "calibration.md", "report.md"}
+_SKIP_NAMES = {"report.json", "run.json", "calibration.json", "calibration.md", "report.md",
+               "transfer.json", "outcome.json", "predict.json"}
 
 
 def _is_skipped(name: str) -> bool:
     if name in _SKIP_NAMES:
         return True
     low = name.lower()
+    if low.startswith("commentary") and low.endswith(".json"):
+        return True
     if "manifest" in low:
         return True
     if low.startswith("log") or "log" in low and low.endswith((".json", ".jsonl")) and "catalog" not in low:

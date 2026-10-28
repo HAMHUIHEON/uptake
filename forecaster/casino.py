@@ -12,13 +12,27 @@ DEAL_ACTIONS = {"Submit-Deal", "Accept-Deal", "Reject-Deal", "Walk-Away"}
 SPEAKERS = {"mturk_agent_1": "A", "mturk_agent_2": "B"}
 
 
-def load_casino(path, limit=None, seed=0, exclude_ids=()) -> list[dict]:
+def load_casino(path, limit=None, seed=0, exclude_ids=(), annotated=True) -> list[dict]:
     with open(Path(path), encoding="utf-8") as f:
         data = json.load(f)
     dialogues: list[dict] = []
     for d in data:
         dialogue_id = d.get("dialogue_id")
         annotations = d.get("annotations") or []
+        if not annotated:
+            if annotations:
+                continue
+            kept: list[Turn] = []
+            for entry in d.get("chat_logs") or []:
+                text = entry.get("text", "")
+                if isinstance(text, str) and text.strip() in DEAL_ACTIONS:
+                    continue
+                speaker = SPEAKERS.get(entry.get("id"), entry.get("id"))
+                kept.append(Turn(speaker=speaker, text=text))
+            if not kept:
+                continue
+            dialogues.append({"dialogue_id": dialogue_id, "turns": kept, "gold": None})
+            continue
         if not annotations:
             continue
         kept: list[Turn] = []

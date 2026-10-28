@@ -67,7 +67,10 @@ def run_item(client, item, casino_index, out_dir, n=3, k=1,
     if kind == "casino":
         dialogue = casino_index[item["dialogue_id"]]
         turns = dialogue["turns"]
-        gold = [sorted(set(g)) for g in dialogue["gold"]]
+        if dialogue.get("gold") is None:
+            gold = None
+        else:
+            gold = [sorted(set(g)) for g in dialogue["gold"]]
     else:
         turns = load_turns(item["path"])
     tags = tag_conversation(client, turns, model=model,
@@ -174,6 +177,9 @@ def run_batch(manifest_items, client, out_dir, casino_path=None,
     if casino_path is not None:
         for d in load_casino(casino_path):
             casino_index[d["dialogue_id"]] = d
+        if any(isinstance(it, dict) and it.get("gold") is False for it in items):
+            for d in load_casino(casino_path, annotated=False):
+                casino_index[d["dialogue_id"]] = d
     results: dict[int, dict] = {}
     todo: list[int] = []
     for idx, item in enumerate(items):
@@ -360,6 +366,9 @@ def repeat_check(items, client, out_dir, sample=5, seed=0, **kw) -> dict:
     if casino_path is not None:
         for d in load_casino(casino_path):
             casino_index[d["dialogue_id"]] = d
+        if any(isinstance(it, dict) and it.get("gold") is False for it in items):
+            for d in load_casino(casino_path, annotated=False):
+                casino_index[d["dialogue_id"]] = d
     rng = random.Random(seed)
     k = min(sample, len(items))
     chosen = rng.sample(items, k) if k else []
@@ -426,20 +435,25 @@ def manifest_main(argv=None) -> None:
     ap.add_argument("--exclude", nargs="*", action="append", default=[])
     ap.add_argument("--turns-glob", default=None)
     ap.add_argument("--turns-genre", default="youtube")
+    ap.add_argument("--unannotated", action="store_true", default=False)
     args = ap.parse_args(argv)
 
     items: list[dict] = []
     if args.casino:
         dialogues = load_casino(args.casino, limit=args.n, seed=args.seed,
-                                exclude_ids=_exclude_ids(args.exclude))
+                                exclude_ids=_exclude_ids(args.exclude),
+                                annotated=(not args.unannotated))
         for d in dialogues:
-            items.append({
+            rec = {
                 "id": f"casino-{d['dialogue_id']}",
                 "genre": "negotiation",
                 "kind": "casino",
                 "dialogue_id": d["dialogue_id"],
                 "public": True,
-            })
+            }
+            if args.unannotated:
+                rec["gold"] = False
+            items.append(rec)
     if args.turns_glob:
         seen: set[str] = set()
         for path in sorted(glob.glob(args.turns_glob)):

@@ -230,6 +230,79 @@ def compare(hits, models, b=2000, seed=0) -> dict:
     return out
 
 
+def transfer(fit_items, eval_items, genre="negotiation", b=2000, seed=0) -> dict:
+    fit_sel = {cid: d for cid, d in (fit_items or {}).items()
+               if isinstance(d, dict) and d.get("genre") == genre}
+    eval_sel = {cid: d for cid, d in (eval_items or {}).items()
+                if isinstance(d, dict) and d.get("genre") == genre}
+    fit_hits: list[dict] = []
+    for cid in sorted(fit_sel):
+        fit_hits.extend(with_context(fit_sel[cid]))
+    eval_hits: list[dict] = []
+    for cid in sorted(eval_sel):
+        eval_hits.extend(with_context(eval_sel[cid]))
+
+    base = C.base_rates(fit_hits)
+    markov = fit_markov(fit_hits, base)
+    lam_base = C.fit_lambda(fit_hits, base)
+    lam_markov = fit_linear(fit_hits, lambda h, _m=markov: markov_prob(h, _m))
+    pa, pb = fit_pool(fit_hits, markov)
+
+    models = {
+        "raw_panel": (lambda h: C.panel_prob(h)),
+        "base": (lambda h, _b=base: _b),
+        "markov": (lambda h, _m=markov: markov_prob(h, _m)),
+        "panel_base": (lambda h, _b=base, _l=lam_base: C.blend(C.panel_prob(h), _b, _l)),
+        "panel_markov": (
+            lambda h, _m=markov, _l=lam_markov: C.blend(C.panel_prob(h), markov_prob(h, _m), _l)
+        ),
+        "pool": (lambda h, _m=markov, _a=pa, _b=pb: pool([markov_prob(h, _m), C.panel_prob(h)], [_a, _b])),
+    }
+    res = compare(eval_hits, models, b=b, seed=seed)
+
+    def _log_lists(fn) -> dict[str, list[float]]:
+        clusters: dict[str, list[float]] = {}
+        for i, h in enumerate(eval_hits):
+            if isinstance(h, dict) and h.get("item") is not None:
+                key = str(h.get("item"))
+            else:
+                key = f"hit-{i}"
+            actual = h.get("actual_class", "proceed") if isinstance(h, dict) else "proceed"
+            try:
+                dist = fn(h)
+            except Exception:
+                dist = {}
+            if not isinstance(dist, dict):
+                dist = {}
+            p = float(dist.get(actual, 0.0) or 0.0)
+            if p <= 0:
+                p = 1e-12
+            clusters.setdefault(key, []).append(math.log(p))
+        return clusters
+
+    logs = {name: _log_lists(fn) for name, fn in models.items()}
+
+    def _contrast(before_name: str, after_name: str) -> dict:
+        pt, lo, hi = S.paired_bootstrap_diff(logs[before_name], logs[after_name], b=b, seed=seed)
+        return {"diff": [float(pt), float(lo), float(hi)], "supported": bool(lo > 0)}
+
+    contrasts = {
+        "B1_panel_base_vs_raw": _contrast("raw_panel", "panel_base"),
+        "B2_markov_vs_base": _contrast("base", "markov"),
+        "B3_pool_vs_markov": _contrast("markov", "pool"),
+        "B4_panel_base_vs_markov": _contrast("markov", "panel_base"),
+    }
+    return {
+        "models": res,
+        "fitted": {"lam_base": float(lam_base), "lam_markov": float(lam_markov),
+                   "a": float(pa), "b": float(pb)},
+        "n_fit_items": len(fit_sel),
+        "n_eval_items": len(eval_sel),
+        "n_eval_hits": len(eval_hits),
+        "contrasts": contrasts,
+    }
+
+
 def _jsonable(obj):
     if isinstance(obj, tuple):
         return [_jsonable(v) for v in obj]
@@ -413,4 +486,83 @@ def main(argv=None) -> None:
         lines.append(f"{genre}: {summary[genre]}")
     lines.append("")
     with open(out / "predict.md", "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
+def transfer_main(argv=None) -> None:
+    ap = argparse.ArgumentParser(prog="uptake-transfer")
+    ap.add_argument("--fit", required=True)
+    ap.add_argument("--eval", required=True)
+    ap.add_argument("--genre", default="negotiation")
+    ap.add_argument("--b", type=int, default=2000)
+    ap.add_argument("--seed", type=int, default=0)
+    args = ap.parse_args(argv)
+
+    fit_items = C._load_items(Path(args.fit))
+    eval_path = Path(args.eval)
+    eval_items = C._load_items(eval_path)
+    res = transfer(fit_items, eval_items, genre=args.genre, b=args.b, seed=args.seed)
+
+    payload = {"fit": str(args.fit), "eval": str(args.eval), "genre": args.genre,
+               "b": int(args.b), "seed": int(args.seed)}
+    payload.update(_jsonable(res))
+    with open(eval_path / "transfer.json", "w", encoding="utf-8") as f:
+        json.dump(_jsonable(payload), f, ensure_ascii=False, indent=2)
+
+    fit = res.get("fitted", {})
+    lines: list[str] = []
+    lines.append("# Transfer: fit -> held-out eval")
+    lines.append("")
+    lines.append(f"fit={args.fit} eval={args.eval} genre={args.genre} b={args.b} seed={args.seed}")
+    lines.append(
+        f"fitted: lam_base={fit.get('lam_base', 0.0):.2f}"
+        f" lam_markov={fit.get('lam_markov', 0.0):.2f}"
+        f" a={fit.get('a', 0.0):.2f} b={fit.get('b', 0.0):.2f}"
+        f" n_fit={res.get('n_fit_items', 0)}"
+        f" n_eval={res.get('n_eval_items', 0)}"
+        f" n_eval_hits={res.get('n_eval_hits', 0)}"
+    )
+    lines.append("")
+    lines.append("| model | log_score | skill vs base [CI] | vs markov [CI] | hit_rate | n |")
+    lines.append("|---|---|---|---|---|---|")
+    models = res.get("models", {})
+    for name in ("raw_panel", "base", "markov", "panel_base", "panel_markov", "pool"):
+        r = models.get(name, {})
+        try:
+            svb = r["skill_vs_base"]
+            svb_txt = f"{svb[0]:+.3f} [{svb[1]:+.3f}-{svb[2]:+.3f}]"
+        except (KeyError, TypeError, IndexError):
+            svb_txt = "n/a"
+        try:
+            vm = r["vs_markov"]
+            vm_txt = f"{vm[0]:+.3f} [{vm[1]:+.3f}-{vm[2]:+.3f}]"
+        except (KeyError, TypeError, IndexError):
+            vm_txt = "n/a"
+        try:
+            ls_txt = f"{float(r['log_score']):+.3f}"
+        except (KeyError, TypeError, ValueError):
+            ls_txt = "n/a"
+        try:
+            hr_txt = f"{float(r['hit_rate']):.3f}"
+        except (KeyError, TypeError, ValueError):
+            hr_txt = "n/a"
+        lines.append(
+            f"| {name} | {ls_txt} | {svb_txt} | {vm_txt} | {hr_txt} | {r.get('n', 0)} |"
+        )
+    lines.append("")
+    lines.append("| contrast | diff [CI] | verdict |")
+    lines.append("|---|---|---|")
+    contrasts = res.get("contrasts", {})
+    for name in ("B1_panel_base_vs_raw", "B2_markov_vs_base", "B3_pool_vs_markov",
+                 "B4_panel_base_vs_markov"):
+        c = contrasts.get(name, {})
+        diff = c.get("diff", [0.0, 0.0, 0.0])
+        try:
+            diff_txt = f"{diff[0]:+.3f} [{diff[1]:+.3f}-{diff[2]:+.3f}]"
+        except (TypeError, IndexError):
+            diff_txt = "n/a"
+        verdict = "SUPPORTED" if c.get("supported") else "NOT SUPPORTED"
+        lines.append(f"| {name} | {diff_txt} | {verdict} |")
+    lines.append("")
+    with open(eval_path / "transfer.md", "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

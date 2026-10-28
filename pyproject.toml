@@ -20,6 +20,12 @@ uptake-batch = "forecaster.batch:batch_main"
 uptake-analyze = "forecaster.analyze:main"
 uptake-calibrate = "forecaster.calibrate:main"
 uptake-predict = "forecaster.predict:main"
+uptake-transfer = "forecaster.predict:transfer_main"
+uptake-outcome = "forecaster.outcome:main"
+uptake-comment = "forecaster.commentary:main"
+uptake-viewer = "forecaster.viewer:main"
+uptake-stakes = "forecaster.stakes:main"
+uptake-value = "forecaster.valuemodel:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]
