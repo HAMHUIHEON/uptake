@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Uptake viewer — 형세 board</title>
+<style>
+:root{
+  --bg:#f4f6f8; --fg:#1f2328; --card:#ffffff; --muted:#5b6470; --border:#d8dee6;
+  --line-a:#1f6feb; --line-b:#0a7d62; --line-bal:#75808c; --zero:#c2c9d2;
+  --good:#1a7f37; --good-bg:#e5f3e9; --bad:#c92a33; --bad-bg:#fbe9ea;
+  --mid:#96690a; --mid-bg:#fdf3d7; --accent:#1f6feb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1117; --fg:#e6edf3; --card:#161b22; --muted:#9aa4b2; --border:#30363d;
+    --line-a:#7fb3ff; --line-b:#56d4a0; --line-bal:#9aa4b2; --zero:#4a525c;
+    --good:#3fb950; --good-bg:#122619; --bad:#f0606a; --bad-bg:#2c1518;
+    --mid:#d29922; --mid-bg:#2b230a; --accent:#7fb3ff;
+  }
+}
+*{box-sizing:border-box}
+body{max-width:1100px;margin:0 auto;padding:0 16px;background:var(--bg);color:var(--fg);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",sans-serif;line-height:1.55}
+header{padding:20px 0 8px}
+h1{font-size:22px;margin:0 0 4px;overflow-wrap:break-word}
+h2{font-size:16px;margin:0 0 10px}
+.credit{color:var(--muted);font-size:13px;margin:0 0 2px;overflow-wrap:break-word}
+.note{color:var(--muted);font-size:13px;margin:0 0 10px}
+.lang{display:flex;gap:8px;margin:6px 0 4px}
+.lang button{border:1px solid var(--border);background:var(--card);color:var(--fg);
+  border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer}
+.lang button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+@media (prefers-color-scheme: dark){.lang button.active{color:#0d1117}}
+.layout{display:flex;flex-direction:column;gap:14px;padding-bottom:28px}
+@media (min-width:900px){
+  .layout{flex-direction:row;align-items:flex-start}
+  .col-main{flex:1 1 60%;min-width:0}
+  .col-side{flex:1 1 40%;min-width:0}
+}
+.col-main,.col-side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;
+  padding:14px;min-width:0;overflow:hidden}
+#chart{width:100%;height:auto;display:block;max-width:100%}
+#stakes-chart{width:100%;height:auto;display:block;max-width:100%}
+.line-a{fill:none;stroke:var(--line-a);stroke-width:2}
+.line-b{fill:none;stroke:var(--line-b);stroke-width:2}
+.line-bal{fill:none;stroke:var(--line-bal);stroke-width:1.5;stroke-dasharray:4 3}
+.zero{stroke:var(--zero);stroke-width:1}
+.axis-tx{fill:var(--muted);font-size:10px}
+.marker{cursor:pointer}
+.marker-bg{fill:var(--card);stroke-width:2}
+.marker-bg[data-mark="!"]{stroke:var(--good)}
+.marker-bg[data-mark="?"]{stroke:var(--bad)}
+.marker-bg[data-mark="!?"]{stroke:var(--mid)}
+.marker-tx{font-size:10px;font-weight:700;fill:var(--fg)}
+.legend{display:flex;gap:12px;margin-top:6px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.lg{display:inline-flex;align-items:center;gap:5px}
+.sw{width:18px;height:0;border-top:2px solid var(--line-a);display:inline-block}
+.sw.b{border-color:var(--line-b)}
+.sw.bal{border-color:var(--line-bal);border-top-style:dashed}
+.video{position:relative;width:100%;aspect-ratio:16/9}
+.video iframe{position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:8px}
+#turns{display:flex;flex-direction:column;gap:10px}
+.turn{border:1px solid var(--border);border-radius:10px;padding:10px;min-width:0}
+.turn.clickable{cursor:pointer}
+.turn.flash{background:var(--mid-bg);outline:2px solid var(--mid)}
+.turn-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
+.turn-idx{font-weight:700}
+.turn-sp{color:var(--muted)}
+.turn-t{color:var(--muted);margin-left:auto}
+.turn-text{margin:6px 0;overflow-wrap:break-word;word-break:break-word}
+.moves{display:flex;flex-wrap:wrap;gap:4px}
+.chip{display:inline-block;background:var(--bg);border:1px solid var(--border);
+  border-radius:999px;padding:0 8px;font-size:12px;color:var(--fg)}
+.badge{display:inline-block;min-width:1.7em;text-align:center;border-radius:6px;
+  padding:0 6px;font-weight:700;font-size:13px;border:1px solid var(--border)}
+.badge[data-mark="!"]{background:var(--good-bg);color:var(--good);border-color:var(--good)}
+.badge[data-mark="?"]{background:var(--bad-bg);color:var(--bad);border-color:var(--bad)}
+.badge[data-mark="!?"]{background:var(--mid-bg);color:var(--mid);border-color:var(--mid)}
+.value-wrap{display:flex;align-items:center;gap:8px;margin-top:6px}
+.value-bar{position:relative;height:8px;width:140px;max-width:45%;
+  background:var(--bg);border:1px solid var(--border);border-radius:5px;overflow:hidden;flex:none}
+.value-fill{position:absolute;top:0;bottom:0;background:var(--accent)}
+.value-zero{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--muted)}
+.value-num{font-size:12px;color:var(--muted)}
+#pivots{display:flex;flex-direction:column;gap:10px}
+.pivot{border:1px solid var(--border);border-radius:10px;padding:10px;cursor:pointer;min-width:0}
+.pivot-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pivot-label{font-weight:700}
+.pivot-idx{color:var(--muted);font-size:12px;margin-left:auto}
+.pivot-line{margin:6px 0;overflow-wrap:break-word;word-break:break-word}
+.pivot-ref{margin:0;color:var(--muted);font-size:12px;overflow-wrap:break-word}
+#score{display:flex;gap:10px;flex-wrap:wrap}
+.score-side{flex:1 1 140px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;min-width:0}
+.score-side h3{margin:0 0 4px;font-size:14px}
+.score-side p{margin:2px 0;font-size:13px}
+.out-note{color:var(--muted);font-size:12px;margin:10px 0 2px}
+.out-line{margin:2px 0;font-size:13px;overflow-wrap:break-word}
+.validity{font-size:12px;color:var(--muted);margin:10px 0 0;overflow-wrap:break-word}
+.muted{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+<h1 id="title"></h1>
+<p id="credit" class="credit"></p>
+<p class="note">model reading of moves, not a judgment of people</p>
+<div class="lang"><button id="lang-ko" type="button">한국어</button><button id="lang-en" type="button">English</button></div>
+</header>
+<main class="layout">
+<div class="col-main">
+<section class="card"><h2 data-ko="형세" data-en="Position">형세</h2><svg id="chart"></svg><div class="legend"><span class="lg"><span class="sw"></span>A</span><span class="lg"><span class="sw b"></span>B</span><span class="lg"><span class="sw bal"></span>A−B</span></div></section>
+<section class="card" id="stakes-card"><h2>판돈: 테이블 위 점수 / Stake: points on the table</h2><svg id="stakes-chart"></svg><p class="note">points each side would get if the latest offer were accepted (CaSiNo point values)</p></section>
+
+<section class="card"><h2 data-ko="전체 턴" data-en="All turns">전체 턴</h2><div id="turns"></div></section>
+</div>
+<div class="col-side">
+<section class="card"><h2 data-ko="결정적 장면" data-en="Pivotal turns">결정적 장면</h2><div id="pivots"></div></section>
+<section class="card"><h2 data-ko="정산" data-en="Score">정산</h2><div id="score"></div><div id="outcomes"></div><p id="validity" class="validity"></p></section>
+</div>
+</main>
+<script type="application/json" id="data">{"id":"casino-613","title":"Dialogue casino-613 — 형세 board","turns":[{"index":0,"speaker":"A","text":"HI, I will have all of the packages of food and 2 waters and 2 firewood and you can have the rest. Unless none is needed for you then I will take them all.","moves":["propose","pressure"],"value":-2.349928469241774,"z":-2.7859041694381586,"mark":"?","t":null},{"index":1,"speaker":"B","text":"i will need 3 firewood packets.  I have a terrible disease that prevents my circulation from working properly.","moves":["counter","appeal_need"],"value":-0.6832618025751073,"z":-0.8100254665309049,"mark":null,"t":null},{"index":2,"speaker":"A","text":"That does sound bad. I am going camping and my kids might want to stay up late so I will need extra firewood for this to keep light and more warmth. I will take all 3 extra of the food and the water but I need 2 firewood also.","moves":["counter","appeal_need","empathize"],"value":-1.6832618025751072,"z":-1.9955526882752568,"mark":"?","t":null},{"index":3,"speaker":"B","text":"no that won't work.  I will give you 3 food and 1 water.  I will take 3 wood and 2 waters.","moves":["counter","reject"],"value":-1.6832618025751072,"z":-1.9955526882752568,"mark":null,"t":null},{"index":4,"speaker":"A","text":"I did not know you wanted water. Ok, that's great so I will take all 3 extra packages of food.As for the water I would like 2 waters because my dog is coming along with us for our trip and extra water for him will be needed.","moves":["counter","appeal_need"],"value":-1.3499284692417737,"z":-1.600376947693806,"mark":null,"t":null},{"index":5,"speaker":"B","text":"i think i should have 2 waters because i will need to put the fire out to protect the forest.","moves":["counter","appeal_need"],"value":-0.6832618025751073,"z":-0.8100254665309049,"mark":null,"t":null},{"index":6,"speaker":"A","text":"Well, if we can't settle on an agreement i'm going to walk away. We agreed I will get all 3 extra packages of the food but I still wish for the 2 extra wood and 2 extra waters","moves":["pressure","counter"],"value":-2.01659513590844,"z":-2.390728428856707,"mark":"?","t":null},{"index":7,"speaker":"B","text":"no we agree that you would get 3 food, i would get 3 waters","moves":["counter","reject"],"value":-1.3499284692417737,"z":-1.600376947693806,"mark":null,"t":null},{"index":8,"speaker":"A","text":"It's agreed, I will get 3 extra packs of food, you will get 3 waters but the extra wood for my kids is needed how about I get 2 extra firewood?","moves":["propose","appeal_need","accept"],"value":-0.3499284692417739,"z":-0.4148497259494542,"mark":null,"t":null},{"index":9,"speaker":"B","text":"i made a mistake i would like 3 wood and 1 water.  you can have the food and 2 waters","moves":["counter","concede","repair"],"value":-0.016595135908440584,"z":-0.0196739853680035,"mark":null,"t":null},{"index":10,"speaker":"A","text":"That is fine. I will get 3 food, 2 waters and 1 extra wood. Agreed?","moves":["accept","propose"],"value":0.31673819742489273,"z":0.37550175521344714,"mark":null,"t":null},{"index":11,"speaker":"B","text":"ok","moves":["accept"],"value":0.9834048640915594,"z":1.1658532363763485,"mark":null,"t":null}],"curves":{"A":[-2.349928469241774,-2.349928469241774,-4.033190271816881,-4.033190271816881,-5.383118741058655,-5.383118741058655,-7.399713876967095,-7.399713876967095,-7.749642346208868,-7.749642346208868,-7.432904148783976,-7.432904148783976],"B":[0.0,-0.6832618025751073,-0.6832618025751073,-2.3665236051502143,-2.3665236051502143,-3.0497854077253215,-3.0497854077253215,-4.399713876967095,-4.399713876967095,-4.416309012875535,-4.416309012875535,-3.432904148783976],"balance":[-2.349928469241774,-1.666666666666667,-3.349928469241774,-1.666666666666667,-3.0165951359084406,-2.3333333333333335,-4.349928469241773,-3.0,-3.3499284692417737,-3.333333333333333,-3.0165951359084406,-4.0]},"pivots":[{"index":0,"speaker":"A","text":"HI, I will have all of the packages of food and 2 waters and 2 firewood and you can have the rest. Unless none is needed for you then I will take them all.","moves":["propose","pressure"],"value":-2.349928469241774,"z":-2.7859041694381586,"disagreement":0.0,"mark":"?","label_ko":"실수","label_en":"mistake","curve_before":0.0,"curve_after":-2.349928469241774,"reference":{"id":"fisher_ury_batna","author":"Roger Fisher; William Ury","title":"Getting to Yes: Negotiating Agreement Without Giving In","year":1981,"venue":"Houghton Mifflin"},"line_ko":"제안으로 압박했지만 BATNA 없는 결렬 위협은 통하지 않아 실수로 -2.3까지 밀렸습니다, Fisher가 말한 그대로죠.","line_en":"Propose-and-pressure falls flat with no real BATNA, a ? mistake sliding 0.0 to -2.3, just as Fisher warned.","source":"llm"},{"index":2,"speaker":"A","text":"That does sound bad. I am going camping and my kids might want to stay up late so I will need extra firewood for this to keep light and more warmth. I will take all 3 extra of the food and the water but I need 2 firewood also.","moves":["counter","appeal_need","empathize"],"value":-1.6832618025751072,"z":-1.9955526882752568,"disagreement":0.9182958340544894,"mark":"?","label_ko":"실수","label_en":"mistake","curve_before":-2.349928469241774,"curve_after":-4.033190271816881,"reference":{"id":"schelling_commitment","author":"Thomas C. Schelling","title":"The Strategy of Conflict","year":1960,"venue":"Harvard University Press"},"line_ko":"퇴로를 끊고 버티다가 -2.3에서 -4.0으로 무너졌습니다, 물러설 자리 없는 공약의 대가입니다.","line_en":"A burns the bridges and slips from -2.3 to -4.0, Schelling commitment with nowhere to retreat.","source":"llm"},{"index":6,"speaker":"A","text":"Well, if we can't settle on an agreement i'm going to walk away. We agreed I will get all 3 extra packages of the food but I still wish for the 2 extra wood and 2 extra waters","moves":["pressure","counter"],"value":-2.01659513590844,"z":-2.390728428856707,"disagreement":0.0,"mark":"?","label_ko":"실수","label_en":"mistake","curve_before":-5.383118741058655,"curve_after":-7.399713876967095,"reference":{"id":"weiqi_no_greed","author":"Traditional; attributed to Wang Jixin (王積薪)","title":"Ten Precepts of Go (圍棋十訣)","year":"Tang dynasty (traditional attribution)","venue":"classic"},"line_ko":"승리에 욕심낸 반격이 실수로 자멸하며 형세가 -5.4에서 -7.4로 기울었습니다, 부득탐승입니다.","line_en":"Greedy counter to force the win was a mistake, dropping -5.4 to -7.4, as Wang Jixin warns.","source":"llm"}],"score":{"A":{"final":-7.432904148783976,"value":-7.432904148783976,"counts":{"!":0,"?":3,"!?":0},"!":0,"?":3,"!?":0,"n_turns":6,"n":6,"turns":6},"B":{"final":-3.432904148783976,"value":-3.432904148783976,"counts":{"!":0,"?":0,"!?":0},"!":0,"?":0,"!?":0,"n_turns":6,"n":6,"turns":6},"counts":{"!":0,"?":3,"!?":0},"n_turns":12,"n":12},"outcomes":{"A":{"points":26,"satisfaction":1,"likeness":1},"B":{"points":13,"satisfaction":-1,"likeness":-2}},"validity":{"C1":[0.3605913134674528,0.23734960446546932,0.4743152431587401],"C2":[0.40141554410660063,0.24001604303204868,0.5412063849009754],"n":134,"n_dialogues":134,"n_participants":268},"youtube_id":null,"dataset":{"id":"chawla_casino_2021","author":"Kushal Chawla; Jaysa Ramirez; Rene Clever; Gale Lucas; Jonathan May; Jonathan Gratch","title":"CaSiNo: A Corpus of Campsite Negotiation Dialogues for Automatic Negotiation Systems","year":2021,"venue":"Proceedings of NAACL-HLT 2021"},"stakes":{"track":[{"A":29,"B":8,"offer_turn":0},{"A":29,"B":8,"offer_turn":0},{"A":33,"B":5,"offer_turn":2},{"A":19,"B":21,"offer_turn":3},{"A":19,"B":21,"offer_turn":3},{"A":19,"B":21,"offer_turn":3},{"A":29,"B":8,"offer_turn":6},{"A":29,"B":8,"offer_turn":6},{"A":21,"B":14,"offer_turn":8},{"A":23,"B":18,"offer_turn":9},{"A":26,"B":13,"offer_turn":10},{"A":26,"B":13,"offer_turn":11}],"offers":{"0":{"A":{"Food":3,"Water":2,"Firewood":2},"B":{"Food":0,"Water":1,"Firewood":1}},"2":{"A":{"Food":3,"Water":3,"Firewood":2},"B":{"Food":0,"Water":0,"Firewood":1}},"3":{"A":{"Food":3,"Water":1,"Firewood":0},"B":{"Food":0,"Water":2,"Firewood":3}},"6":{"A":{"Food":3,"Water":2,"Firewood":2},"B":{"Food":0,"Water":1,"Firewood":1}},"8":{"A":{"Food":3,"Water":0,"Firewood":2},"B":{"Food":0,"Water":3,"Firewood":1}},"9":{"A":{"Food":3,"Water":2,"Firewood":0},"B":{"Food":0,"Water":1,"Firewood":3}},"10":{"A":{"Food":3,"Water":2,"Firewood":1},"B":{"Food":0,"Water":1,"Firewood":2}},"11":{"A":{"Food":3,"Water":2,"Firewood":1},"B":{"Food":0,"Water":1,"Firewood":2}}}}}</script>
+<script>
+(function(){
+"use strict";
+var dataEl=document.getElementById("data");
+var view=JSON.parse(dataEl.textContent);
+var lang="ko";
+function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==null&&text!==undefined)e.textContent=text;return e;}
+function fmtT(t){if(t===null||t===undefined)return "";t=Math.max(0,Math.floor(t));var m=Math.floor(t/60);var s=t%60;return "≈"+m+":"+(s<10?"0":"")+s;}
+function maybeSeek(t){}
+
+function renderHeader(){
+  var t=document.getElementById("title");
+  t.textContent=view.title||view.id||"";
+  try{document.title=view.title||"Uptake viewer";}catch(e){}
+  var cr=document.getElementById("credit");
+  while(cr.firstChild)cr.removeChild(cr.firstChild);
+  if(view.dataset){
+    var ds=view.dataset;
+    var tx=(ds.author||"")+" ("+(ds.year!==null&&ds.year!==undefined?ds.year:"")+")"+", "+(ds.title||"");
+    if(ds.venue)tx+=" — "+ds.venue;
+    cr.textContent=tx;
+  }
+}
+function renderChart(){
+  var svg=document.getElementById("chart");
+  var NS=svg.namespaceURI;
+  while(svg.firstChild)svg.removeChild(svg.firstChild);
+  var curves=view.curves||{};
+  var A=curves.A||[],B=curves.B||[],Bal=curves.balance||[];
+  var turns=view.turns||[];
+  var n=Math.max(A.length,B.length,Bal.length,turns.length);
+  if(!n)return;
+  var all=[0];
+  var k,i;
+  for(i=0;i<A.length;i++)all.push(A[i]);
+  for(i=0;i<B.length;i++)all.push(B[i]);
+  for(i=0;i<Bal.length;i++)all.push(Bal[i]);
+  var mn=Math.min.apply(null,all),mx=Math.max.apply(null,all);
+  if(mx===mn)mx=mn+1;
+  var W=600,H=220,padL=38,padR=14,padT=14,padB=24;
+  svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  svg.setAttribute("role","img");
+  svg.setAttribute("aria-label","position curve");
+  function X(i){if(n<=1)return padL+(W-padL-padR)/2;return padL+(i/(n-1))*(W-padL-padR);}
+  function Y(v){return padT+(1-(v-mn)/(mx-mn))*(H-padT-padB);}
+  var zl=document.createElementNS(NS,"line");
+  zl.setAttribute("x1",padL);zl.setAttribute("x2",W-padR);
+  zl.setAttribute("y1",Y(0));zl.setAttribute("y2",Y(0));
+  zl.setAttribute("class","zero");
+  svg.appendChild(zl);
+  var yticks=[mn,0,mx];
+  for(var yi=0;yi<yticks.length;yi++){
+    var ylab=document.createElementNS(NS,"text");
+    ylab.setAttribute("x",padL-4);ylab.setAttribute("y",Y(yticks[yi])+3);
+    ylab.setAttribute("text-anchor","end");
+    ylab.setAttribute("class","axis-tx");
+    ylab.textContent=Number(yticks[yi]).toFixed(1);
+    svg.appendChild(ylab);
+  }
+  function draw(arr,cls){
+    if(!arr||!arr.length)return;
+    var pts=[];
+    for(var j=0;j<arr.length;j++)pts.push(X(j).toFixed(1)+","+Y(arr[j]).toFixed(1));
+    var pl=document.createElementNS(NS,"polyline");
+    pl.setAttribute("points",pts.join(" "));
+    pl.setAttribute("class",cls);
+    svg.appendChild(pl);
+  }
+  draw(A,"line-a");draw(B,"line-b");draw(Bal,"line-bal");
+  var step=Math.max(1,Math.floor(n/6));
+  for(var t=0;t<n;t+=step){
+    var lab=document.createElementNS(NS,"text");
+    lab.setAttribute("x",X(t));lab.setAttribute("y",H-6);
+    lab.setAttribute("text-anchor","middle");
+    lab.setAttribute("class","axis-tx");
+    var idx=(t<turns.length&&turns[t].index!==undefined)?turns[t].index:t;
+    lab.textContent=""+idx;
+    svg.appendChild(lab);
+  }
+  var posByIndex={};
+  for(var p=0;p<turns.length;p++)posByIndex[turns[p].index]=p;
+  var pivs=view.pivots||[];
+  for(k=0;k<pivs.length;k++){
+    (function(pv){
+      var pos=posByIndex[pv.index];
+      if(pos===null||pos===undefined)return;
+      var yv=0;
+      if(pv.speaker==="A"&&A.length>pos)yv=A[pos];
+      else if(pv.speaker==="B"&&B.length>pos)yv=B[pos];
+      else if(Bal.length>pos)yv=Bal[pos];
+      var cx=X(pos),cy=Y(yv);
+      var g=document.createElementNS(NS,"g");
+      g.setAttribute("class","marker");
+      var c=document.createElementNS(NS,"circle");
+      c.setAttribute("cx",cx);c.setAttribute("cy",cy);c.setAttribute("r","10");
+      c.setAttribute("class","marker-bg");
+      if(pv.mark)c.setAttribute("data-mark",pv.mark);
+      g.appendChild(c);
+      var tx=document.createElementNS(NS,"text");
+      tx.setAttribute("x",cx);tx.setAttribute("y",cy+4);
+      tx.setAttribute("text-anchor","middle");
+      tx.setAttribute("class","marker-tx");
+      tx.textContent=pv.mark||"";
+      g.appendChild(tx);
+      g.addEventListener("click",function(){
+        var tgt=document.getElementById("turn-"+pv.index);
+        if(tgt){tgt.scrollIntoView({block:"center"});tgt.classList.add("flash");
+          setTimeout(function(){tgt.classList.remove("flash");},1600);}
+      });
+      svg.appendChild(g);
+    })(pivs[k]);
+  }
+}
+function renderStakes(){
+  var svg=document.getElementById("stakes-chart");
+  if(!svg)return;
+  var st=view.stakes;
+  var card=document.getElementById("stakes-card");
+  if(!st||!st.track||!st.track.length){
+    if(card)card.style.display="none";
+    return;
+  }
+  if(card)card.style.display="";
+  var NS=svg.namespaceURI;
+  while(svg.firstChild)svg.removeChild(svg.firstChild);
+  var curves=view.curves||{};
+  var A=curves.A||[],B=curves.B||[],Bal=curves.balance||[];
+  var turns=view.turns||[];
+  var n=Math.max(A.length,B.length,Bal.length,turns.length,st.track.length);
+  if(!n)return;
+  var W=600,H=140,padL=38,padR=14,padT=10,padB=20;
+  svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  svg.setAttribute("role","img");
+  svg.setAttribute("aria-label","stake curve");
+  function X(i){if(n<=1)return padL+(W-padL-padR)/2;return padL+(i/(n-1))*(W-padL-padR);}
+  function Y(v){return padT+(1-(v/36))*(H-padT-padB);}
+  var sticks=[0,12,24,36];
+  for(var ti=0;ti<sticks.length;ti++){
+    var gl=document.createElementNS(NS,"line");
+    gl.setAttribute("x1",padL);gl.setAttribute("x2",W-padR);
+    gl.setAttribute("y1",Y(sticks[ti]));gl.setAttribute("y2",Y(sticks[ti]));
+    gl.setAttribute("class","zero");
+    svg.appendChild(gl);
+    var slab=document.createElementNS(NS,"text");
+    slab.setAttribute("x",padL-4);slab.setAttribute("y",Y(sticks[ti])+3);
+    slab.setAttribute("text-anchor","end");
+    slab.setAttribute("class","axis-tx");
+    slab.textContent=""+sticks[ti];
+    svg.appendChild(slab);
+  }
+  function drawSide(key,cls){
+    var run=[];
+    function flush(){
+      if(run.length>1){
+        var pl=document.createElementNS(NS,"polyline");
+        pl.setAttribute("points",run.join(" "));
+        pl.setAttribute("class",cls);
+        svg.appendChild(pl);
+      }else if(run.length===1){
+        var xy=run[0].split(",");
+        var c=document.createElementNS(NS,"circle");
+        c.setAttribute("cx",xy[0]);c.setAttribute("cy",xy[1]);
+        c.setAttribute("r","2.5");
+        c.style.fill=(key==="A")?"var(--line-a)":"var(--line-b)";
+        svg.appendChild(c);
+      }
+      run=[];
+    }
+    for(var i=0;i<st.track.length;i++){
+      var e=st.track[i];
+      var v=e?e[key]:null;
+      if(v===null||v===undefined){flush();}
+      else{run.push(X(i).toFixed(1)+","+Y(v).toFixed(1));}
+    }
+    flush();
+  }
+  drawSide("A","line-a");drawSide("B","line-b");
+}
+function renderTurns(){
+  var box=document.getElementById("turns");
+  while(box.firstChild)box.removeChild(box.firstChild);
+  var turns=view.turns||[];
+  var maxAbs=0,i;
+  for(i=0;i<turns.length;i++){var a=Math.abs(turns[i].value||0);if(a>maxAbs)maxAbs=a;}
+  if(maxAbs===0)maxAbs=1;
+  for(i=0;i<turns.length;i++){
+    (function(turn,pos){
+      var d=el("div","turn");
+      d.setAttribute("id","turn-"+turn.index);
+      var head=el("div","turn-head");
+      head.appendChild(el("span","turn-idx","#"+turn.index));
+      head.appendChild(el("span","turn-sp",turn.speaker||""));
+      if(turn.mark){
+        var b=el("span","badge",turn.mark);
+        b.setAttribute("data-mark",turn.mark);
+        head.appendChild(b);
+      }
+      if(turn.t!==null&&turn.t!==undefined)head.appendChild(el("span","turn-t",fmtT(turn.t)));
+      d.appendChild(head);
+      d.appendChild(el("p","turn-text",turn.text||""));
+      if(turn.moves&&turn.moves.length){
+        var mc=el("div","moves");
+        for(var m=0;m<turn.moves.length;m++)mc.appendChild(el("span","chip",turn.moves[m]));
+        d.appendChild(mc);
+      }
+      var vst=view.stakes;
+      if(vst&&vst.offers&&vst.offers[turn.index]!==undefined){
+        var tri=(vst.track||[])[pos];
+        if(!(tri&&tri.A!==null&&tri.A!==undefined&&tri.B!==null&&tri.B!==undefined)){
+          var trs=vst.track||[];
+          for(var q=0;q<trs.length;q++){
+            if(trs[q]&&trs[q].offer_turn===turn.index){tri=trs[q];break;}
+          }
+        }
+        if(tri&&tri.A!==null&&tri.A!==undefined&&tri.B!==null&&tri.B!==undefined){
+          var oc=el("div","moves");
+          oc.appendChild(el("span","chip","offer A "+tri.A+" · B "+tri.B));
+          d.appendChild(oc);
+        }
+      }
+      var wrap=el("div","value-wrap");
+      var bar=el("div","value-bar");
+      var fill=document.createElement("div");
+      fill.className="value-fill";
+      var v=turn.value||0;
+      var w=Math.abs(v)/maxAbs*50;
+      if(v>=0){fill.style.left="50%";fill.style.width=w+"%";}
+      else{fill.style.left=(50-w)+"%";fill.style.width=w+"%";}
+      if(turn.mark==="!")fill.style.background="var(--good)";
+      else if(turn.mark==="?")fill.style.background="var(--bad)";
+      else if(turn.mark==="!?")fill.style.background="var(--mid)";
+      bar.appendChild(fill);
+      var z=document.createElement("div");z.className="value-zero";bar.appendChild(z);
+      wrap.appendChild(bar);
+      wrap.appendChild(el("span","value-num",(v>=0?"+":"")+Number(v).toFixed(1)));
+      d.appendChild(wrap);
+      if(turn.t!==null&&turn.t!==undefined&&view.youtube_id){
+        d.classList.add("clickable");
+        d.addEventListener("click",function(){maybeSeek(turn.t);});
+      }
+      box.appendChild(d);
+    })(turns[i],i);
+  }
+}
+function renderPivots(){
+  var box=document.getElementById("pivots");
+  while(box.firstChild)box.removeChild(box.firstChild);
+  var pivs=view.pivots||[];
+  var i;
+  for(i=0;i<pivs.length;i++){
+    (function(pv){
+      var c=el("article","pivot");
+      var top=el("div","pivot-top");
+      var b=el("span","badge",pv.mark||"");
+      if(pv.mark)b.setAttribute("data-mark",pv.mark);
+      top.appendChild(b);
+      top.appendChild(el("span","pivot-label",lang==="ko"?(pv.label_ko||""):(pv.label_en||"")));
+      top.appendChild(el("span","pivot-idx","#"+pv.index+" "+(pv.speaker||"")));
+      c.appendChild(top);
+      c.appendChild(el("p","pivot-line",lang==="ko"?(pv.line_ko||""):(pv.line_en||"")));
+      var ref=pv.reference||{};
+      var yr=(ref.year!==null&&ref.year!==undefined)?ref.year:"";
+      c.appendChild(el("p","pivot-ref",(ref.author||"")+" ("+yr+"), "+(ref.title||"")));
+      c.addEventListener("click",function(){
+        var tgt=document.getElementById("turn-"+pv.index);
+        if(tgt){tgt.scrollIntoView({block:"center"});tgt.classList.add("flash");
+          setTimeout(function(){tgt.classList.remove("flash");},1600);}
+      });
+      box.appendChild(c);
+    })(pivs[i]);
+  }
+  if(!pivs.length)box.appendChild(el("p","muted",lang==="ko"?"결정적 장면 없음":"No pivotal turns"));
+}
+function renderScore(){
+  var box=document.getElementById("score");
+  while(box.firstChild)box.removeChild(box.firstChild);
+  var sc=view.score||{};
+  var sides=["A","B"];
+  for(var i=0;i<sides.length;i++){
+    var s=sides[i];
+    var info=sc[s]||{};
+    var d=el("div","score-side");
+    d.appendChild(el("h3","score-name",s));
+    var fin=(info.final!==null&&info.final!==undefined)?info.final:((info.value!==null&&info.value!==undefined)?info.value:0);
+    d.appendChild(el("p","score-final",(lang==="ko"?"최종 ":"final ")+Number(fin).toFixed(1)));
+    var counts=info.counts||{};
+    var g=(counts["!"]!==null&&counts["!"]!==undefined)?counts["!"]:((info["!"]!==null&&info["!"]!==undefined)?info["!"]:0);
+    var q=(counts["?"]!==null&&counts["?"]!==undefined)?counts["?"]:((info["?"]!==null&&info["?"]!==undefined)?info["?"]:0);
+    var m=(counts["!?"]!==null&&counts["!?"]!==undefined)?counts["!?"]:((info["!?"]!==null&&info["!?"]!==undefined)?info["!?"]:0);
+    d.appendChild(el("p","score-counts","! "+g+" · ? "+q+" · !? "+m));
+    var nt=(info.n_turns!==null&&info.n_turns!==undefined)?info.n_turns:((info.n!==null&&info.n!==undefined)?info.n:((info.turns!==null&&info.turns!==undefined)?info.turns:0));
+    d.appendChild(el("p","score-turns",(lang==="ko"?"턴 ":"turns ")+nt));
+    box.appendChild(d);
+  }
+  if(view.stakes&&view.stakes.track){
+    var trk=view.stakes.track;
+    var endA=null,endB=null;
+    for(var s=trk.length-1;s>=0;s--){
+      if(trk[s]&&trk[s].A!==null&&trk[s].A!==undefined&&trk[s].B!==null&&trk[s].B!==undefined){
+        endA=trk[s].A;endB=trk[s].B;break;
+      }
+    }
+    box.appendChild(el("p","out-line","on-table points at the end: A "+(endA===null?"–":endA)+" / B "+(endB===null?"–":endB)));
+  }
+  var ocBox=document.getElementById("outcomes");
+  while(ocBox.firstChild)ocBox.removeChild(ocBox.firstChild);
+  if(view.outcomes){
+    ocBox.appendChild(el("p","out-note","reported by participants after the negotiation"));
+    var s2;
+    for(var j=0;j<sides.length;j++){
+      s2=sides[j];
+      var r=(view.outcomes||{})[s2];
+      if(!r)continue;
+      ocBox.appendChild(el("p","out-line",s2+": points "+r.points+", satisfaction "+r.satisfaction+", likeness "+r.likeness));
+    }
+  }
+  var vEl=document.getElementById("validity");
+  while(vEl.firstChild)vEl.removeChild(vEl.firstChild);
+  if(view.validity){
+    var vv=view.validity;
+    var n=(vv.n!==null&&vv.n!==undefined)?vv.n:((vv.n_dialogues!==null&&vv.n_dialogues!==undefined)?vv.n_dialogues:"?");
+    var c1=vv.C1,c2=vv.C2,txt="";
+    if(c1&&c1.length===3){
+      txt+="on "+n+" held-out dialogues the curve tracks how much the other side liked the speaker: ρ = "+Number(c1[0]).toFixed(3)+" ["+Number(c1[1]).toFixed(3)+", "+Number(c1[2]).toFixed(3)+"]";
+    }
+    if(c2&&c2.length===3){
+      if(txt)txt+="; ";
+      txt+="dyad vs satisfaction: ρ = "+Number(c2[0]).toFixed(3)+" ["+Number(c2[1]).toFixed(3)+", "+Number(c2[2]).toFixed(3)+"]";
+    }
+    if(txt)vEl.textContent=txt;
+  }
+}
+function applyLang(){
+  var nodes=document.querySelectorAll("[data-ko]");
+  for(var i=0;i<nodes.length;i++){
+    var nd=nodes[i];
+    nd.textContent=(lang==="ko")?nd.getAttribute("data-ko"):nd.getAttribute("data-en");
+  }
+  var bk=document.getElementById("lang-ko"),be=document.getElementById("lang-en");
+  if(bk&&be){
+    if(lang==="ko"){bk.classList.add("active");be.classList.remove("active");}
+    else{be.classList.add("active");bk.classList.remove("active");}
+  }
+  renderPivots();
+  renderScore();
+}
+document.getElementById("lang-ko").addEventListener("click",function(){lang="ko";applyLang();});
+document.getElementById("lang-en").addEventListener("click",function(){lang="en";applyLang();});
+renderHeader();
+renderChart();
+renderStakes();
+renderTurns();
+applyLang();
+})();
+</script>
+</body>
+</html>
