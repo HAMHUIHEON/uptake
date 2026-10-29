@@ -69,21 +69,21 @@ def _prefix_item():
 def test_prefix_features_values_and_future_ignored():
     table = {"accept": 1.0, "reject": 2.0, "pressure": 50.0}
     item = _prefix_item()
-    got = V.prefix_features(item, 1, "A", 0.5, table)
+    got = V.prefix_features(item, 1, "A", 0.5, table, featureset="legacy")
     assert got["rec_self"] == pytest.approx(0.5)
     assert got["rec_other"] == pytest.approx(1.5)
     assert got["tagv_self"] == pytest.approx(1.0)
     assert got["tagv_other"] == pytest.approx(2.0)
     assert got["n_self"] == 1
-    gotB = V.prefix_features(item, 1, "B", 0.5, table)
+    gotB = V.prefix_features(item, 1, "B", 0.5, table, featureset="legacy")
     assert gotB["rec_self"] == pytest.approx(1.5)
     assert gotB["rec_other"] == pytest.approx(0.5)
     assert gotB["n_self"] == 1
     # truncating future turns changes nothing
     trunc = _item("casino-1", item["moves"][:2], item["effects"][:2])
-    assert V.prefix_features(trunc, 1, "A", 0.5, table) == pytest.approx(got)
+    assert V.prefix_features(trunc, 1, "A", 0.5, table, featureset="legacy") == pytest.approx(got)
     # full prefix sees the future
-    full = V.prefix_features(item, 3, "A", 0.5, table)
+    full = V.prefix_features(item, 3, "A", 0.5, table, featureset="legacy")
     assert full["rec_self"] == pytest.approx((0.5 + 99.5) / 2)
     assert full["n_self"] == 2
 
@@ -91,7 +91,7 @@ def test_prefix_features_values_and_future_ignored():
 def test_prefix_features_none_gives_zero():
     table = {"accept": 1.0}
     item = _prefix_item()
-    got = V.prefix_features(item, 0, "B", 0.5, table)
+    got = V.prefix_features(item, 0, "B", 0.5, table, featureset="legacy")
     assert got["rec_self"] == pytest.approx(0.0)
     assert got["tagv_self"] == pytest.approx(0.0)
     assert got["n_self"] == 0
@@ -102,7 +102,7 @@ def test_prefix_features_none_gives_zero():
                   [{"turn_index": 0, "speaker": "A", "moves": []},
                    {"turn_index": 1, "speaker": "A", "moves": ["nope"]}],
                   [{"index": 0, "speaker": "A", "value": 1.0}])
-    g2 = V.prefix_features(item2, 5, "A", 0.0, table)
+    g2 = V.prefix_features(item2, 5, "A", 0.0, table, featureset="legacy")
     assert g2["tagv_self"] == pytest.approx(0.0)
 
 
@@ -167,7 +167,7 @@ def _toy_dialogues():
 def test_fit_value_and_evaluate_keys():
     items, oc = _toy_dialogues()
     table = {"accept": 1.0, "reject": -1.0}
-    model = V.fit_value(items, oc, 0.0, table, lam=1.0)
+    model = V.fit_value(items, oc, 0.0, table, lam=1.0, featureset="legacy")
     assert model["features"] == V.FEATURES
     assert len(model["w"]) == 5
     res = V.evaluate(model, items, oc, 0.0, table, b=50, seed=0)
@@ -208,7 +208,8 @@ def test_cli_writes_value_files(tmp_path):
     cp = tmp_path / "casino.json"
     cp.write_text(json.dumps(data))
     V.main(["--fit", str(fit_d), "--eval", str(ev_d),
-            "--casino", str(cp), "--lam", "1.0", "--b", "20"])
+            "--casino", str(cp), "--lam", "1.0", "--b", "20",
+            "--features", "legacy"])
     payload = json.loads((ev_d / "value.json").read_text())
     for key in ("V1", "V2", "V3", "V1_minus_C1", "w", "b", "mu"):
         assert key in payload

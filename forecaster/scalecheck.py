@@ -12,12 +12,14 @@ from . import calibrate as C
 from . import outcome as O
 from . import stats as S
 from . import usage as U
+from . import valuemodel as V
 from .batch import spearman
 
 SCALE_BOUNDS = {
     "v2": ((-2, 2), (0, 2)),
     "fine100": ((0, 100), (0, 100)),
     "seven": ((-3, 3), (-3, 3)),
+    "dist5": ((10, 90), (10, 90)),
 }
 
 
@@ -167,6 +169,7 @@ def resolution(records, base_n=3) -> dict:
     pairs = _iter_records(records)
     turn_values = []
     reading_values = []
+    spreads = []
     rel_min_c = rel_max_c = face_min_c = face_max_c = 0
     n_readings_total = 0
     sum_n = 0
@@ -202,6 +205,15 @@ def resolution(records, base_n=3) -> dict:
                     turn_values.append(float(B._value_of(e)))
                 except (TypeError, ValueError):
                     continue
+                sp = e.get("spread", None)
+                if isinstance(sp, (int, float)) and not isinstance(sp, bool):
+                    try:
+                        fsp = float(sp)
+                    except (ValueError, OverflowError):
+                        pass
+                    else:
+                        if not (math.isnan(fsp) or math.isinf(fsp)):
+                            spreads.append(fsp)
             readings = e.get("readings", []) or []
             vals = []
             for r in readings:
@@ -238,6 +250,9 @@ def resolution(records, base_n=3) -> dict:
     n_turns = len(turn_values)
     distinct_turn = len({round(v, 6) for v in turn_values})
     distinct_reading = len({round(v, 6) for v in reading_values})
+    distinct_turn_01 = len({round(v, 2) for v in turn_values})
+    distinct_turn_1 = len({round(v, 1) for v in turn_values})
+    mean_spread = sum(spreads) / len(spreads) if spreads else 0.0
     if n_readings_total > 0:
         rel_min_share = rel_min_c / n_readings_total
         rel_max_share = rel_max_c / n_readings_total
@@ -309,6 +324,11 @@ def resolution(records, base_n=3) -> dict:
         "n_turns": int(n_turns),
         "distinct_turn_values": int(distinct_turn),
         "distinct_reading_values": int(distinct_reading),
+        "distinct_turn_values_01": int(distinct_turn_01),
+        "distinct_turn_values_1": int(distinct_turn_1),
+        "distinct_turn_values_0.01": int(distinct_turn_01),
+        "distinct_turn_values_0.1": int(distinct_turn_1),
+        "mean_spread": float(mean_spread),
         "rel_min_share": float(rel_min_share),
         "rel_max_share": float(rel_max_share),
         "face_min_share": float(face_min_share),
@@ -370,9 +390,16 @@ def convergent(records, base_records) -> dict:
     return {"rho": float(rho), "n": int(n)}
 
 
-def board_cost(calls_path, ids) -> dict:
+def board_cost(calls_path, ids, layers=("board", "pairwise")) -> dict:
     zeros = {"calls": 0, "usd": 0.0, "usd_per_dialogue": 0.0,
              "mean_completion_tokens": 0.0}
+    if isinstance(layers, str):
+        layers_set = {layers}
+    else:
+        try:
+            layers_set = set(layers or ())
+        except TypeError:
+            layers_set = {"board"}
     if ids is None:
         ids_set = None
         n_ids = 0
@@ -413,10 +440,17 @@ def board_cost(calls_path, ids) -> dict:
             meta = rec.get("meta", {})
             if not isinstance(meta, dict):
                 continue
-            if meta.get("layer") != "board":
+            if meta.get("layer") not in layers_set:
                 continue
-            if ids_set is not None and meta.get("item") not in ids_set:
-                continue
+            if ids_set is not None:
+                if meta.get("item") in ids_set:
+                    pass
+                elif meta.get("layer") == "pairwise" and any(
+                        d in ids_set
+                        for d in (meta.get("dialogues", []) or [])):
+                    pass
+                else:
+                    continue
             if rec.get("error", None) is not None:
                 continue
             model = rec.get("model", "")
@@ -820,33 +854,12 @@ def rows_for(eval_records, outcomes, fit_records, genre="negotiation"):
         for pos, e in enumerate(_effects_of(record)):
             if e.get("speaker") != side:
                 continue
-            try:
-                n_r = int(e.get("n_readings", 0) or 0)
-            except (TypeError, ValueError):
-                n_r = 0
-            if n_r <= 0:
-                continue
-            try:
-                val = float(B._value_of(e))
-            except (TypeError, ValueError):
-                continue
             idx = e.get("index", pos)
             idx = idx if isinstance(idx, int) else pos
-            ml = by_turn.get(idx, [])
-            if not ml:
-                tv = 0.0
-            else:
-                tot = 0.0
-                for mv in ml:
-                    if isinstance(mv, str):
-                        try:
-                            tot += float(table.get(mv, 0.0))
-                        except (TypeError, ValueError):
-                            tot += 0.0
-                    else:
-                        tot += 0.0
-                tv = tot / len(ml)
-            terms.append((val - mu) - tv)
+            r = V.turn_residual(e, idx, by_turn, mu, table)
+            if r is None:
+                continue
+            terms.append(r)
         if terms:
             row["resid"] = float(sum(terms) / len(terms))
         else:
