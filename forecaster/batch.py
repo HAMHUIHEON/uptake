@@ -58,7 +58,7 @@ def _tag_dict(t) -> dict:
 def run_item(client, item, casino_index, out_dir, n=3, k=1,
              effort="low", inner_workers=8,
              public_model=PUBLIC_MODEL,
-             private_model=PRIVATE_MODEL) -> dict:
+             private_model=PRIVATE_MODEL, scale="v2") -> dict:
     model = model_for(item, public_model=public_model,
                       private_model=private_model)
     effort = _normalize_effort(effort)
@@ -77,9 +77,17 @@ def run_item(client, item, casino_index, out_dir, n=3, k=1,
                             max_workers=inner_workers,
                             reasoning_effort=effort,
                             item_id=item.get("id", ""))
-    effects = evaluate_turns(client, turns, n=n, k=k, model=model,
-                             max_workers=inner_workers, move_tags=tags,
-                             item_id=item.get("id", ""))
+    if scale == "v2":
+        effects = evaluate_turns(client, turns, n=n, k=k, model=model,
+                                 max_workers=inner_workers, move_tags=tags,
+                                 item_id=item.get("id", ""))
+    else:
+        from .rescore import evaluate_turns_scaled
+
+        effects = evaluate_turns_scaled(
+            client, turns, scale=scale, n=n, k=k, model=model,
+            max_workers=inner_workers, move_tags=tags,
+            item_id=item.get("id", ""))
     hits = forecast_hits(effects, tags)
     moves = [_tag_dict(t) for t in tags]
     n_turns = len(moves)
@@ -94,6 +102,7 @@ def run_item(client, item, casino_index, out_dir, n=3, k=1,
         "id": item["id"],
         "genre": item.get("genre", ""),
         "model": model,
+        "scale": scale,
         "moves": moves,
         "effects": effects,
         "board": effects,
@@ -494,6 +503,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--inner-workers", type=int, default=8)
     ap.add_argument("--n", type=int, default=3)
     ap.add_argument("--k", type=int, default=1)
+    ap.add_argument("--scale", default="fine100",
+                    choices=["v2", "fine100", "seven"])
     ap.add_argument("--effort", default="low")
     ap.add_argument("--repeat-sample", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
@@ -536,7 +547,8 @@ def batch_main(argv=None) -> None:
         "commit": _git_commit(),
         "argv": list(sys.argv),
         "settings": {
-            "n": args.n, "k": args.k, "effort": args.effort,
+            "n": args.n, "k": args.k, "scale": args.scale,
+            "effort": args.effort,
             "workers": args.workers, "inner_workers": args.inner_workers,
             "budget": args.budget, "seed": args.seed, "b": args.b,
             "repeat_sample": args.repeat_sample,
@@ -552,7 +564,8 @@ def batch_main(argv=None) -> None:
     meter = Meter(budget_usd=args.budget)
     inner = MuseClient(meter=meter, default_effort=args.effort)
     client = LoggingClient(inner, CallLog(out / "calls.jsonl"), run_id)
-    item_kwargs = {"n": args.n, "k": args.k, "effort": args.effort,
+    item_kwargs = {"n": args.n, "k": args.k, "scale": args.scale,
+                   "effort": args.effort,
                    "inner_workers": args.inner_workers,
                    "public_model": args.public_model,
                    "private_model": args.private_model}

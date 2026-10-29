@@ -8,8 +8,10 @@ from pathlib import Path
 
 from .board import _value_of, actual_class
 
-LABEL_KO = {"!": "묘수", "?": "실수", "!?": "특이수"}
-LABEL_EN = {"!": "strong move", "?": "mistake", "!?": "unusual move"}
+LABEL_KO = {"!": "묘수", "?": "실수", "!?": "특이수",
+            "!!": "대묘수", "??": "대실수"}
+LABEL_EN = {"!": "strong move", "?": "mistake", "!?": "unusual move",
+            "!!": "brilliant move", "??": "blunder"}
 
 _YEAR_RE = re.compile(r"\b\d{4}\b")
 _QUOTE_RES = (
@@ -50,6 +52,15 @@ def turn_values(item, norm) -> list[dict]:
         sd = float(norm.get("sd", 0.0)) if isinstance(norm, dict) else 0.0
     except (TypeError, ValueError):
         sd = 0.0
+    table = norm.get("table") if isinstance(norm, dict) else None
+    use_resid = (isinstance(table, dict) and isinstance(norm, dict)
+                 and "sd_resid" in norm)
+    if use_resid:
+        try:
+            sd_resid = float(norm.get("sd_resid", 0.0))
+        except (TypeError, ValueError):
+            sd_resid = 0.0
+        from .valuemodel import turn_residual
     by_index = _moves_by_index(item)
     effects = item.get("effects", []) if isinstance(item, dict) else []
     out: list[dict] = []
@@ -70,7 +81,7 @@ def turn_values(item, norm) -> list[dict]:
             dis = float(e.get("disagreement", 0.0))
         except (TypeError, ValueError):
             dis = 0.0
-        out.append({
+        entry = {
             "index": idx,
             "speaker": speaker if isinstance(speaker, str) else str(speaker),
             "text": text if isinstance(text, str) else str(text),
@@ -78,7 +89,28 @@ def turn_values(item, norm) -> list[dict]:
             "value": float(value),
             "z": float(z),
             "disagreement": float(dis),
-        })
+        }
+        if use_resid:
+            if not moves:
+                tagv = 0.0
+            else:
+                tot = 0.0
+                for mv in moves:
+                    if isinstance(mv, str):
+                        try:
+                            tot += float(table.get(mv, 0.0))
+                        except (TypeError, ValueError, AttributeError):
+                            tot += 0.0
+                    else:
+                        tot += 0.0
+                tagv = tot / len(moves)
+            r = turn_residual(e, idx, by_index, mu, table)
+            resid = 0.0 if r is None else float(r)
+            z_resid = 0.0 if sd_resid == 0 else float(resid) / float(sd_resid)
+            entry["tagv"] = float(tagv)
+            entry["resid"] = float(resid)
+            entry["z_resid"] = float(z_resid)
+        out.append(entry)
     return out
 
 
@@ -111,7 +143,23 @@ def side_curves(item, norm) -> dict:
     return {"A": a_curve, "B": b_curve, "balance": bal}
 
 
-def mark_for(z, surprise) -> str | None:
+def mark_for(z, surprise, z_resid=None) -> str | None:
+    if z_resid is not None:
+        try:
+            zf = float(z_resid)
+        except (TypeError, ValueError):
+            return None
+        if zf >= 2.0:
+            return "!!"
+        if zf >= 1.0:
+            return "!"
+        if zf <= -2.0:
+            return "??"
+        if zf <= -1.0:
+            return "?"
+        if surprise:
+            return "!?"
+        return None
     try:
         zf = float(z)
     except (TypeError, ValueError):
@@ -145,7 +193,7 @@ def pick_turns(item, norm, markov=None, k=3) -> list[dict]:
         else:
             prev_class = actual_class(list(tv[pos - 1].get("moves", []) or []))
         sur = surprise(prev_class, cur_class, markov)
-        mark = mark_for(entry.get("z", 0.0), sur)
+        mark = mark_for(entry.get("z", 0.0), sur, entry.get("z_resid"))
         if mark is None:
             continue
         rec = dict(entry)
@@ -168,7 +216,14 @@ def pick_turns(item, norm, markov=None, k=3) -> list[dict]:
     except (TypeError, ValueError):
         kk = 3
     kk = max(0, kk)
-    ranked = sorted(cands, key=lambda e: (-abs(float(e.get("z", 0.0))), int(e.get("index", 0))))
+
+    def _rank_val(e):
+        zr = e.get("z_resid")
+        if zr is None:
+            zr = e.get("z", 0.0)
+        return float(zr)
+
+    ranked = sorted(cands, key=lambda e: (-abs(_rank_val(e)), int(e.get("index", 0))))
     picked = ranked[:kk]
     picked_ids = {id(e) for e in picked}
     extra = [e for e in sorted(cands, key=lambda e: int(e.get("index", 0)))
@@ -408,12 +463,20 @@ def comment(item, norm, markov=None, k=3, client=None,
             sd = 0.0
     else:
         mu, sd = 0.0, 0.0
-    return {"id": item_id, "norm": {"mu": mu, "sd": sd},
+    norm_out: dict = {"mu": mu, "sd": sd}
+    if isinstance(norm, dict) and "scale" in norm:
+        norm_out["scale"] = norm["scale"]
+    if isinstance(norm, dict) and "table" in norm:
+        norm_out["table"] = norm["table"]
+    if isinstance(norm, dict) and "sd_resid" in norm:
+        norm_out["sd_resid"] = norm["sd_resid"]
+    return {"id": item_id, "norm": norm_out,
             "curves": curves, "turns": turns_out}
 
 
 def main(argv=None) -> None:
     from . import calibrate as C
+    from . import outcome as O
     from . import predict as P
 
     ap = argparse.ArgumentParser(prog="uptake-comment")
@@ -432,8 +495,28 @@ def main(argv=None) -> None:
     genre = item.get("genre", "") if isinstance(item, dict) else ""
     sel = {cid: d for cid, d in fit_items.items()
            if isinstance(d, dict) and d.get("genre") == genre}
+    item_scale = item.get("scale", "v2") if isinstance(item, dict) else "v2"
+    fit_scales = sorted({d.get("scale", "v2") for d in sel.values()
+                         if isinstance(d, dict)})
+    if len(fit_scales) > 1:
+        raise SystemExit(
+            "scale mismatch: fit has mixed scales "
+            + ",".join(str(s) for s in fit_scales))
+    fit_scale = fit_scales[0] if fit_scales else item_scale
+    if item_scale != fit_scale:
+        raise SystemExit(
+            f"scale mismatch: item={item_scale} fit={fit_scale}")
     eff_lists = [d.get("effects", []) or [] for d in sel.values()]
     norm = C.fit_board_norm(eff_lists, method="z")
+    norm["scale"] = fit_scale
+    try:
+        mu_fit = float(norm.get("mu", 0.0))
+    except (TypeError, ValueError):
+        mu_fit = 0.0
+    table = O.move_value_table(sel, mu_fit)
+    resid = C.residual_norm(sel, mu_fit, table)
+    norm["table"] = {str(k): float(v) for k, v in table.items()}
+    norm["sd_resid"] = float(resid["sd_resid"])
     fit_hits: list[dict] = []
     for cid in sorted(sel):
         try:

@@ -6,10 +6,44 @@ import json
 import re
 from pathlib import Path
 
+from .board import _value_of
 from .commentary import turn_values
 
 _YT_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
-_MARKS = ("!", "?", "!?")
+TEXT_PANEL_LABEL = "text panel"
+AUDIO_PANEL_LABEL = "audio panel (Muse Spark 1.2, hears the clip)"
+_MARKS = ("!", "?", "!?", "!!", "??")
+_COUNT_FOLD = {"!!": "!", "??": "?"}
+_SCALE_LABELS = {
+    "fine100": "panel 0–100",
+    "seven": "panel −3..+3",
+    "v2": "panel −2..+2",
+}
+
+
+def _scale_of(item) -> str:
+    scale = item.get("scale", "v2") if isinstance(item, dict) else "v2"
+    return scale if scale in _SCALE_LABELS else "v2"
+
+
+def _raw_means(effect) -> tuple:
+    rels: list[float] = []
+    faces: list[float] = []
+    readings = effect.get("readings", []) if isinstance(effect, dict) else []
+    for r in readings or []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            rels.append(float(r["rel_raw"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+        try:
+            faces.append(float(r["face_raw"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+    if not rels or not faces:
+        return (None, None)
+    return (sum(rels) / len(rels), sum(faces) / len(faces))
 
 
 def _dataset_credit(item_id):
@@ -130,8 +164,26 @@ def _final_of(curves, side) -> float:
         return 0.0
 
 
+def _audio_values_by_index(audio_record) -> dict[int, float]:
+    out: dict[int, float] = {}
+    effects = audio_record.get("effects", []) if isinstance(audio_record, dict) else []
+    for pos, e in enumerate(effects or []):
+        if not isinstance(e, dict):
+            continue
+        idx = e.get("index", pos)
+        idx = idx if isinstance(idx, int) else pos
+        if idx in out:
+            continue
+        try:
+            out[idx] = float(_value_of(e))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def build_view(item, commentary, outcomes=None, outcome_stats=None,
-               youtube_id=None, turns=None, stakes=None) -> dict:
+               youtube_id=None, turns=None, stakes=None,
+               audio_record=None) -> dict:
     item = item if isinstance(item, dict) else {}
     commentary = commentary if isinstance(commentary, dict) else {}
     item_id = item.get("id", "")
@@ -143,6 +195,20 @@ def build_view(item, commentary, outcomes=None, outcome_stats=None,
         title = "Dialogue \u2014 \ud615\uc138 board"
     norm = commentary.get("norm", {})
     tv = turn_values(item, norm)
+    try:
+        mu = float(norm.get("mu", 0.0)) if isinstance(norm, dict) else 0.0
+    except (TypeError, ValueError):
+        mu = 0.0
+    if audio_record is None:
+        audio_by_idx: dict[int, float] = {}
+    else:
+        audio_by_idx = _audio_values_by_index(audio_record)
+    scale = _scale_of(item)
+    eff_by_index: dict[int, dict] = {}
+    for e in (item.get("effects", []) or []):
+        if (isinstance(e, dict) and isinstance(e.get("index"), int)
+                and e["index"] not in eff_by_index):
+            eff_by_index[e["index"]] = e
     curves = commentary.get("curves")
     if not isinstance(curves, dict):
         curves = {"A": [], "B": [], "balance": []}
@@ -165,18 +231,45 @@ def build_view(item, commentary, outcomes=None, outcome_stats=None,
     turns_out: list[dict] = []
     for pos, e in enumerate(tv):
         idx = e.get("index", pos)
-        turns_out.append({
+        if scale == "v2":
+            raw_rel, raw_face = None, None
+        else:
+            raw_rel, raw_face = _raw_means(eff_by_index.get(idx))
+        rec = {
             "index": idx,
             "speaker": e.get("speaker", ""),
             "text": e.get("text", ""),
             "moves": list(e.get("moves", []) or []),
             "value": float(e.get("value", 0.0)),
             "z": float(e.get("z", 0.0)),
+            "raw_rel": raw_rel,
+            "raw_face": raw_face,
             "mark": mark_by_index.get(idx),
             "t": t_list[pos] if pos < len(t_list) else None,
-        })
-        if turns_out[-1]["mark"] is None:
-            turns_out[-1]["mark"] = None
+        }
+        if e.get("resid") is not None:
+            rec["resid"] = float(e["resid"])
+        if e.get("z_resid") is not None:
+            rec["z_resid"] = float(e["z_resid"])
+        if audio_record is not None:
+            rec["text_raw"] = float(rec["value"] + mu)
+            if idx in audio_by_idx:
+                rec["audio_value"] = float(audio_by_idx[idx])
+                rec["audio_delta"] = float(audio_by_idx[idx]
+                                           - (rec["value"] + mu))
+            else:
+                rec["audio_value"] = None
+                rec["audio_delta"] = None
+        turns_out.append(rec)
+    audio_curve: list[float] | None = None
+    if audio_record is not None:
+        audio_curve = []
+        cum = 0.0
+        for pos, e in enumerate(tv):
+            idx = e.get("index", pos)
+            if idx in audio_by_idx:
+                cum += float(audio_by_idx[idx]) - mu
+            audio_curve.append(float(cum))
     global_counts = {"!": 0, "?": 0, "!?": 0}
     side_counts = {"A": {"!": 0, "?": 0, "!?": 0},
                    "B": {"!": 0, "?": 0, "!?": 0}}
@@ -186,6 +279,7 @@ def build_view(item, commentary, outcomes=None, outcome_stats=None,
         mark = p.get("mark")
         if mark not in _MARKS:
             continue
+        mark = _COUNT_FOLD.get(mark, mark)
         global_counts[mark] += 1
         speaker = p.get("speaker")
         if speaker in ("A", "B"):
@@ -228,9 +322,13 @@ def build_view(item, commentary, outcomes=None, outcome_stats=None,
                 "track": track if isinstance(track, list) else [],
                 "offers": offers if isinstance(offers, dict) else {},
             }
+    audio_out = None
+    if audio_curve is not None:
+        audio_out = {"curve": audio_curve, "label": AUDIO_PANEL_LABEL}
     return {
         "id": item_id,
         "title": title,
+        "scale": scale,
         "turns": turns_out,
         "curves": curves,
         "pivots": pivots,
@@ -240,20 +338,21 @@ def build_view(item, commentary, outcomes=None, outcome_stats=None,
         "youtube_id": yt_out,
         "dataset": dataset,
         "stakes": stakes_out,
+        "audio": audio_out,
     }
 
 
 _CSS = """
 :root{
   --bg:#f4f6f8; --fg:#1f2328; --card:#ffffff; --muted:#5b6470; --border:#d8dee6;
-  --line-a:#1f6feb; --line-b:#0a7d62; --line-bal:#75808c; --zero:#c2c9d2;
+  --line-a:#1f6feb; --line-b:#0a7d62; --line-bal:#75808c; --line-audio:#b25e09; --zero:#c2c9d2;
   --good:#1a7f37; --good-bg:#e5f3e9; --bad:#c92a33; --bad-bg:#fbe9ea;
   --mid:#96690a; --mid-bg:#fdf3d7; --accent:#1f6feb;
 }
 @media (prefers-color-scheme: dark){
   :root{
     --bg:#0d1117; --fg:#e6edf3; --card:#161b22; --muted:#9aa4b2; --border:#30363d;
-    --line-a:#7fb3ff; --line-b:#56d4a0; --line-bal:#9aa4b2; --zero:#4a525c;
+    --line-a:#7fb3ff; --line-b:#56d4a0; --line-bal:#9aa4b2; --line-audio:#e39a3b; --zero:#4a525c;
     --good:#3fb950; --good-bg:#122619; --bad:#f0606a; --bad-bg:#2c1518;
     --mid:#d29922; --mid-bg:#2b230a; --accent:#7fb3ff;
   }
@@ -285,6 +384,8 @@ h2{font-size:16px;margin:0 0 10px}
 .line-a{fill:none;stroke:var(--line-a);stroke-width:2}
 .line-b{fill:none;stroke:var(--line-b);stroke-width:2}
 .line-bal{fill:none;stroke:var(--line-bal);stroke-width:1.5;stroke-dasharray:4 3}
+.line-audio{fill:none;stroke:var(--line-audio);stroke-width:2;stroke-dasharray:6 3}
+.audio-dot{fill:transparent;pointer-events:all}
 .zero{stroke:var(--zero);stroke-width:1}
 .axis-tx{fill:var(--muted);font-size:10px}
 .marker{cursor:pointer}
@@ -292,12 +393,16 @@ h2{font-size:16px;margin:0 0 10px}
 .marker-bg[data-mark="!"]{stroke:var(--good)}
 .marker-bg[data-mark="?"]{stroke:var(--bad)}
 .marker-bg[data-mark="!?"]{stroke:var(--mid)}
+.marker-bg[data-mark="!!"]{stroke:var(--good);stroke-width:3}
+.marker-bg[data-mark="??"]{stroke:var(--bad);stroke-width:3}
 .marker-tx{font-size:10px;font-weight:700;fill:var(--fg)}
 .legend{display:flex;gap:12px;margin-top:6px;font-size:12px;color:var(--muted);flex-wrap:wrap}
 .lg{display:inline-flex;align-items:center;gap:5px}
 .sw{width:18px;height:0;border-top:2px solid var(--line-a);display:inline-block}
 .sw.b{border-color:var(--line-b)}
 .sw.bal{border-color:var(--line-bal);border-top-style:dashed}
+.sw.text{border-color:var(--muted)}
+.sw.audio{border-color:var(--line-audio);border-top-style:dashed}
 .video{position:relative;width:100%;aspect-ratio:16/9}
 .video iframe{position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:8px}
 #turns{display:flex;flex-direction:column;gap:10px}
@@ -317,6 +422,8 @@ h2{font-size:16px;margin:0 0 10px}
 .badge[data-mark="!"]{background:var(--good-bg);color:var(--good);border-color:var(--good)}
 .badge[data-mark="?"]{background:var(--bad-bg);color:var(--bad);border-color:var(--bad)}
 .badge[data-mark="!?"]{background:var(--mid-bg);color:var(--mid);border-color:var(--mid)}
+.badge[data-mark="!!"]{background:var(--good);color:#fff;border-color:var(--good)}
+.badge[data-mark="??"]{background:var(--bad);color:#fff;border-color:var(--bad)}
 .value-wrap{display:flex;align-items:center;gap:8px;margin-top:6px}
 .value-bar{position:relative;height:8px;width:140px;max-width:45%;
   background:var(--bg);border:1px solid var(--border);border-radius:5px;overflow:hidden;flex:none}
@@ -369,14 +476,16 @@ function renderChart(){
   while(svg.firstChild)svg.removeChild(svg.firstChild);
   var curves=view.curves||{};
   var A=curves.A||[],B=curves.B||[],Bal=curves.balance||[];
+  var AC=(view.audio&&view.audio.curve)||[];
   var turns=view.turns||[];
-  var n=Math.max(A.length,B.length,Bal.length,turns.length);
+  var n=Math.max(A.length,B.length,Bal.length,AC.length,turns.length);
   if(!n)return;
   var all=[0];
   var k,i;
   for(i=0;i<A.length;i++)all.push(A[i]);
   for(i=0;i<B.length;i++)all.push(B[i]);
   for(i=0;i<Bal.length;i++)all.push(Bal[i]);
+  for(i=0;i<AC.length;i++)all.push(AC[i]);
   var mn=Math.min.apply(null,all),mx=Math.max.apply(null,all);
   if(mx===mn)mx=mn+1;
   var W=600,H=220,padL=38,padR=14,padT=14,padB=24;
@@ -408,7 +517,24 @@ function renderChart(){
     pl.setAttribute("class",cls);
     svg.appendChild(pl);
   }
-  draw(A,"line-a");draw(B,"line-b");draw(Bal,"line-bal");
+  draw(A,"line-a");draw(B,"line-b");draw(Bal,"line-bal");draw(AC,"line-audio");
+  function sgn(v){return (v>=0?"+":"")+Number(v).toFixed(1);}
+  for(var d=0;d<turns.length;d++){
+    (function(tn,pos){
+      if(tn.audio_value===null||tn.audio_value===undefined)return;
+      if(pos>=AC.length)return;
+      var dot=document.createElementNS(NS,"circle");
+      dot.setAttribute("cx",X(pos));dot.setAttribute("cy",Y(AC[pos]));
+      dot.setAttribute("r","8");
+      dot.setAttribute("class","audio-dot");
+      var tip=document.createElementNS(NS,"title");
+      var base=(tn.text_raw!==null&&tn.text_raw!==undefined)?tn.text_raw:(tn.value||0);
+      var dl=(tn.audio_delta!==null&&tn.audio_delta!==undefined)?tn.audio_delta:(tn.audio_value-base);
+      tip.textContent="#"+tn.index+" text "+sgn(base)+" · audio "+sgn(tn.audio_value)+" · Δ "+sgn(dl);
+      dot.appendChild(tip);
+      svg.appendChild(dot);
+    })(turns[d],d);
+  }
   var step=Math.max(1,Math.floor(n/6));
   for(var t=0;t<n;t+=step){
     var lab=document.createElementNS(NS,"text");
@@ -568,13 +694,22 @@ function renderTurns(){
       var w=Math.abs(v)/maxAbs*50;
       if(v>=0){fill.style.left="50%";fill.style.width=w+"%";}
       else{fill.style.left=(50-w)+"%";fill.style.width=w+"%";}
-      if(turn.mark==="!")fill.style.background="var(--good)";
-      else if(turn.mark==="?")fill.style.background="var(--bad)";
+      if(turn.mark==="!"||turn.mark==="!!")fill.style.background="var(--good)";
+      else if(turn.mark==="?"||turn.mark==="??")fill.style.background="var(--bad)";
       else if(turn.mark==="!?")fill.style.background="var(--mid)";
       bar.appendChild(fill);
       var z=document.createElement("div");z.className="value-zero";bar.appendChild(z);
       wrap.appendChild(bar);
-      wrap.appendChild(el("span","value-num",(v>=0?"+":"")+Number(v).toFixed(1)));
+      var vnum=el("span","value-num",(v>=0?"+":"")+Number(v).toFixed(1));
+      if(turn.resid!==null&&turn.resid!==undefined&&turn.z_resid!==null&&turn.z_resid!==undefined){
+        vnum.setAttribute("title","resid "+Number(turn.resid).toFixed(2)+" · z_resid "+Number(turn.z_resid).toFixed(2));
+      }
+      wrap.appendChild(vnum);
+      if(turn.raw_rel!==null&&turn.raw_rel!==undefined&&turn.raw_face!==null&&turn.raw_face!==undefined){
+        var raw=el("span","value-num","raw "+Number(turn.raw_rel).toFixed(1)+" · "+Number(turn.raw_face).toFixed(1));
+        raw.setAttribute("title","mean panel reading rel_raw · face_raw");
+        wrap.appendChild(raw);
+      }
       d.appendChild(wrap);
       if(turn.t!==null&&turn.t!==undefined&&view.youtube_id){
         d.classList.add("clickable");
@@ -727,6 +862,8 @@ def render_html(view) -> str:
         iframe = ""
         seek_js = _SEEK_NONE
     js = _JS_HEAD + seek_js + _JS_TAIL
+    scale_label = _SCALE_LABELS.get(view.get("scale", "v2"),
+                                    _SCALE_LABELS["v2"])
     stakes_section = ""
     if isinstance(view.get("stakes"), dict):
         stakes_section = (
@@ -735,6 +872,14 @@ def render_html(view) -> str:
             '<svg id="stakes-chart"></svg>'
             '<p class="note">points each side would get if the latest offer '
             'were accepted (CaSiNo point values)</p></section>\n'
+        )
+    legend_audio = ""
+    if isinstance(view.get("audio"), dict):
+        legend_audio = (
+            '<span class="lg"><span class="sw text"></span>'
+            + TEXT_PANEL_LABEL + "</span>"
+            '<span class="lg"><span class="sw audio"></span>'
+            + AUDIO_PANEL_LABEL + "</span>"
         )
     return (
         "<!DOCTYPE html>\n"
@@ -746,6 +891,7 @@ def render_html(view) -> str:
         '<h1 id="title"></h1>\n'
         '<p id="credit" class="credit"></p>\n'
         '<p class="note">model reading of moves, not a judgment of people</p>\n'
+        '<p id="scale" class="note">' + scale_label + "</p>\n"
         '<div class="lang"><button id="lang-ko" type="button">\ud55c\uad6d\uc5b4</button>'
         '<button id="lang-en" type="button">English</button></div>\n'
         "</header>\n"
@@ -755,7 +901,14 @@ def render_html(view) -> str:
         '<svg id="chart"></svg>'
         '<div class="legend"><span class="lg"><span class="sw"></span>A</span>'
         '<span class="lg"><span class="sw b"></span>B</span>'
-        '<span class="lg"><span class="sw bal"></span>A\u2212B</span></div></section>\n'
+        '<span class="lg"><span class="sw bal"></span>A\u2212B</span>'
+        '<span class="lg"><span class="badge" data-mark="!!">!!</span></span>'
+        '<span class="lg"><span class="badge" data-mark="!">!</span></span>'
+        '<span class="lg"><span class="badge" data-mark="!?">!?</span></span>'
+        '<span class="lg"><span class="badge" data-mark="?">?</span></span>'
+        '<span class="lg"><span class="badge" data-mark="??">??</span></span>'
+        + legend_audio
+        + '</div></section>\n'
         + stakes_section
         + iframe + "\n"
         '<section class="card"><h2 data-ko="\uc804\uccb4 \ud134" data-en="All turns">\uc804\uccb4 \ud134</h2>'
@@ -786,6 +939,7 @@ def main(argv=None) -> None:
     ap.add_argument("--youtube-id", default=None)
     ap.add_argument("--turns", default=None)
     ap.add_argument("--stakes", default=None)
+    ap.add_argument("--audio-record", default=None)
     args = ap.parse_args(argv)
 
     with open(args.item, encoding="utf-8") as f:
@@ -814,6 +968,10 @@ def main(argv=None) -> None:
     if args.stakes:
         with open(args.stakes, encoding="utf-8") as f:
             stakes = json.load(f)
+    audio_record = None
+    if args.audio_record:
+        with open(args.audio_record, encoding="utf-8") as f:
+            audio_record = json.load(f)
     view = build_view(
         item,
         commentary,
@@ -822,6 +980,7 @@ def main(argv=None) -> None:
         youtube_id=youtube_id,
         turns=turns_list,
         stakes=stakes,
+        audio_record=audio_record,
     )
     html = render_html(view)
     out_path = Path(args.out)
