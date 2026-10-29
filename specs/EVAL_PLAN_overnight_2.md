@@ -160,3 +160,102 @@ n = 300·(SE₃₀₀·(1.960+0.842)/δ)² for δ = +0.03 and +0.06 (assumes SE 
   explanation only, and the value model (amendment 5, agreed as the 형세 direction) drops the reception features.
 - Several metrics are tested; only C6diff(S*) and R1 carry decisions. Everything else is reported without a verdict.
 - Budget: $8 metered for all amendment-6 calls (hard cap via the meter); stop and report whatever finished if reached.
+
+## Amendment 7 (2026-10-29 18:13 KST, written before any pairwise call) — pairwise-comparison pilot; value-model 2×2 reporting
+
+Motivation (from the Amendment 6 counts, 13,635 fine100 readings): judges use only 30 of the 101
+values, 90% are multiples of 5, and the five values 45/50/55/60/65 cover 68% of readings. The
+grid is not the bottleneck; absolute scoring is. Pairwise judgment ("which of these two messages
+left the listener warmer toward the speaker?") is the standard way to get a fine ordering from
+coarse absolute judges.
+
+### P7-A pairwise pilot (feasibility + reliability; not a result test)
+- Data: the same 40 pilot dialogues as Amendment 6 (ids in data/private/scale6/p2_fine100).
+- Pool: every effect turn of those dialogues (speaker, listener, 6-turn window as in the board
+  prompt). Each turn is paired with k = 4 turns sampled uniformly from OTHER dialogues of the same
+  genre (cross-dialogue pairs, so ratings share one scale across dialogues; within-dialogue pairs
+  would lose the level that C1/R1 need). Presentation order randomized per pair (seed 0).
+- Judges: the same three receiver stances as the board panel (neutral / trusting / suspicious),
+  one reading each per pair, effort low, same model as the board.
+- Rating: Bradley–Terry (ties = half win each, MM iterations, small uniform prior for
+  connectivity). reception_pw(dialogue, side) = mean rating of that side's turns.
+- Metrics (all reported):
+  1. split-half reliability: Spearman between ratings fitted on two random halves of the pairs
+     (seed 1), vs the same statistic for fine100 computed by splitting the 3 judges' readings
+     (judge 1+2 mean vs judge 3; and the reverse) on the same 40 dialogues;
+  2. position bias: share of "first" wins before de-randomization (expect ≈ 0.5; report);
+  3. $/dialogue and parse-failure rate;
+  4. R1(pairwise) and R1(fine100) on these 40 dialogues with bootstrap CIs — REPORTED ONLY,
+     not used for the decision (n = 40, as in Amendment 6).
+- Decision rule (pre-stated): run the full pairwise pass on held-out 2 (300 dialogues) only if
+  split-half reliability(pairwise) ≥ reliability(fine100) AND parse failure ≤ 5% AND cost ≤ 2×
+  fine100 ($0.0132/dialogue). Otherwise stop and report. Budget cap: pilot $1.5.
+- If the full pass runs (Amendment 8 to be written first): judgment metric R1 with CI on
+  held-out 2 and 1, compared to R1(fine100) on the same dialogues; same "lower bound > 0" rule.
+
+### P7-B value-model refit (task32) — reporting only
+- Featuresets legacy {rec, tagv, n} vs resid {tagv, resid, n}; scales v2 (fit overnight_1 → eval
+  overnight_2b, overnight_2) and fine100 (fit scale6/fit_fine100 → eval full_ho2_fine100,
+  full_ho1_fine100). V1, V1−C1, V2, V3 with CIs in a 2×2 table. No acceptance rule: the resid
+  featureset is a reparameterization chosen for interpretability (marks = residual), not a claim
+  of better fit. Fit-set fine100 re-read: 200 dialogues, cap $1.6.
+
+### P7-C commentary marks (task33) — no test
+- Marks move from z(value) to z(residual) with "!!"/"??" at |z_resid| ≥ 2. Demo-facing; no metric.
+
+## Amendment 8 (2026-10-29 18:27 KST, written before any call) — distribution reading via structured output; Muse model ladder; audio panel (demo)
+
+Context: Amendment 6 counts show absolute judges round to multiples of 5 (30 of 101 values used).
+logprobs are unavailable on Muse Spark with reasoning. The Model API supports structured output
+(`response_format: json_schema`). Judging rubric weighs "Meta tool use beyond basic integration".
+
+### P8-A distribution reading ("dist5") — pilot then full, pre-stated rule
+- Reading: the same listener persona, window and question as fine100, but the judge returns a
+  probability distribution over five bins of the listener's relationship-after / face-after
+  (0–20, 20–40, 40–60, 60–80, 80–100), enforced by a strict JSON schema. Point value = expected
+  value over bin midpoints (10/30/50/70/90), normalized exactly like fine100 ((EV − 50)/25) so the
+  two scales are comparable; spread = sd of the distribution (reported as confidence).
+- Pilot: the same 40 dialogues (ids file data/private/scale6/pilot_ids.txt), n = 3 stances,
+  model muse-spark-1.3-contributor, effort low. Report: distinct turn values, z ≥ +2 share, ICC(1),
+  parse failures (should be 0 with the schema), $/dialogue, split-half reliability (judges 2 vs 1,
+  as in task34) side by side with fine100 on the same dialogues; R1 reported only (n = 40).
+- Go rule for the full run: parse failures ≤ 5% AND reliability(dist5) ≥ reliability(fine100)
+  AND cost ≤ 1.5× fine100. If go: full run on held-out 2 (300) and held-out 1 (134); judgment
+  metric R1 with CI; **adopt dist5 as default only if R1(dist5) lower bound > 0 on both sets and
+  R1(dist5) point estimate ≥ R1(fine100)**; otherwise keep fine100 and report. Cap  total.
+- Structured output is also switched on for fine100 (same prompt, integer fields in a strict
+  schema) and its parse-failure/cost delta is reported; no decision attached.
+
+### P8-B Muse model ladder — reporting only
+- fine100, n = 3, same 40 pilot dialogues, models muse-spark-1.1 and muse-spark-1.2 (1.3-contributor
+  = existing p2_fine100). Report per model: ICC(1), split-half reliability, distinct values, parse
+  failures, latency, $/dialogue, R1 (n = 40, reported only). No model change unless a cheaper model
+  matches 1.3-contributor's reliability within its CI — and even then only after a full-set
+  replication (would be a new amendment). Cap .
+
+### P8-C audio panel — demo only, no metric
+- Listeners read the turn from the audio segment (muse-spark-1.2, audio input) plus the transcript
+  window; outputs the same record format with modality "audio". Used on self-recorded role-play
+  only (no real third parties); shown in the viewer as a second curve against the text panel.
+  Agreement between the two panels is reported descriptively; nothing is decided from it.
+
+#### P8-B note (18:31 KST, after the first runs)
+muse-spark-1.1 and 1.2 run in Standard mode at 1.25/4.25 $/M tokens vs 0.10/0.20 for the
+contributor variants, so the $0.5-per-model caps stopped after 5 (1.1) and 3 (1.2) dialogues
+($1.05 spent; the P8-B cap of $1 is used up). Change, recorded before any further call: add
+muse-spark-1.2-contributor (same price class as 1.3-contributor, ≈$0.3 for 40 dialogues) as the
+like-for-like rung. Completing 1.1 and 1.2 Standard on all 40 would cost ≈$4 and ≈$7; this
+needs an explicit cap raise (owner decision) and is otherwise reported as partial.
+
+#### P8-B owner decision (18:33 KST)
+- Drop muse-spark-1.1 (partial 5/40 reported as-is, no further calls). Decide on completing muse-spark-1.2 Standard only after the 1.2-contributor rung is reported.
+
+#### P8-B result (18:49 KST) — reporting only, numbers from analysis/ladder.md, ladder11.md, rel_*.json
+| model (fine100, n=3, pilot 40) | distinct turn values | ICC(1) | split-half ρ | $/dialogue | C1 [CI] (n=40, report only) | conv. ρ vs 1.3c |
+|---|---|---|---|---|---|---|
+| muse-spark-1.3-contributor (P2) | 102 | 0.352 | 0.687 | 0.0066 | +0.512 [+0.281, +0.689] | — |
+| muse-spark-1.2-contributor | 141 | 0.343 | 0.690 | 0.0059 | +0.553 [+0.318, +0.722] | +0.908 |
+| muse-spark-1.1 (partial, 5 dialogues) | 38 | 0.097 | 0.410 (n=59 turns) | 0.0775 | +0.292 [−0.558, +0.729] | +0.800 |
+Reading: 1.2-contributor and 1.3-contributor are interchangeable as listeners on this pilot (reliability
+within 0.01, convergent ρ 0.91); 1.1 is both less reliable and ~12× dearer per dialogue. Per the
+pre-stated rule no model change follows. muse-spark-1.2 Standard: not completed (owner decision).
