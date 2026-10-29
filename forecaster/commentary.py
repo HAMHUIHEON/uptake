@@ -318,17 +318,36 @@ def pick_turns(item, norm, markov=None, k=3) -> list[dict]:
     return picked
 
 
-def choose_reference(turn, refs, used=()) -> dict:
+def _genres_of(ref) -> list:
+    """Genre tags of one reference; missing tags mean negotiation-only."""
+    g = ref.get("genres") if isinstance(ref, dict) else None
+    if isinstance(g, list) and g:
+        return [str(x) for x in g]
+    return ["negotiation"]
+
+
+def choose_reference(turn, refs, used=(), genre=None) -> dict:
     refs = list(refs or [])
     if not refs:
         raise ValueError("empty references")
+    if genre is None and isinstance(turn, dict):
+        genre = turn.get("genre")
+    if not genre or not isinstance(genre, str):
+        genre = "negotiation"
+    pool = [r for r in refs if isinstance(r, dict)
+            and (genre in _genres_of(r) or "any" in _genres_of(r))]
+    if not pool:
+        pool = [r for r in refs if isinstance(r, dict)
+                and "any" in _genres_of(r)]
+    if not pool:
+        pool = [r for r in refs if isinstance(r, dict)]
+    if not pool:
+        return refs[0]
     used_set = set(used or ())
     mark = turn.get("mark") if isinstance(turn, dict) else None
     tmoves = set(turn.get("moves", []) or []) if isinstance(turn, dict) else set()
     scored: list[tuple] = []
-    for i, r in enumerate(refs):
-        if not isinstance(r, dict):
-            continue
+    for i, r in enumerate(pool):
         if mark not in (r.get("marks") or []):
             continue
         rmoves = r.get("moves") or []
@@ -340,9 +359,7 @@ def choose_reference(turn, refs, used=()) -> dict:
         scored.sort(key=lambda x: (-x[1], (x[0].get("id") in used_set), x[2]))
         return scored[0][0]
     fall: list[tuple] = []
-    for i, r in enumerate(refs):
-        if not isinstance(r, dict):
-            continue
+    for i, r in enumerate(pool):
         if mark not in (r.get("marks") or []):
             continue
         if "*" not in (r.get("moves") or []):
@@ -351,12 +368,12 @@ def choose_reference(turn, refs, used=()) -> dict:
     if fall:
         fall.sort(key=lambda x: ((x[0].get("id") in used_set), x[1]))
         return fall[0][0]
-    any_mark = [(r, i) for i, r in enumerate(refs)
-                if isinstance(r, dict) and mark in (r.get("marks") or [])]
+    any_mark = [(r, i) for i, r in enumerate(pool)
+                if mark in (r.get("marks") or [])]
     if any_mark:
         any_mark.sort(key=lambda x: ((x[0].get("id") in used_set), x[1]))
         return any_mark[0][0]
-    return refs[0]
+    return pool[0]
 
 
 def _line_numbers(turn) -> tuple[float, float]:
@@ -516,8 +533,11 @@ def comment(item, norm, markov=None, k=3, client=None,
     used: list = []
     turns_out: list[dict] = []
     item_id = item.get("id", "") if isinstance(item, dict) else ""
+    item_genre = item.get("genre", "") if isinstance(item, dict) else ""
+    if not item_genre or not isinstance(item_genre, str):
+        item_genre = "negotiation"
     for turn in picked:
-        ref = choose_reference(turn, refs_list, used)
+        ref = choose_reference(turn, refs_list, used, genre=item_genre)
         used.append(ref.get("id"))
         if client is None:
             line = template_line(turn, ref)

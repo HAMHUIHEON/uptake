@@ -12,6 +12,7 @@ import argparse
 import html
 import json
 import math
+import os
 from pathlib import Path
 
 from .commentary import (
@@ -96,6 +97,70 @@ def momentum_series(tv, speakers=None) -> list[float]:
 
 def clamp_m(m) -> float:
     return max(-_M_CLAMP, min(_M_CLAMP, _num(m)))
+
+
+def hero_swings(momentum, k=3) -> list[dict]:
+    """Turns with the largest |ΔM|, ranked (ΔM_t = M_t − M_{t−1}, M_{−1}=0)."""
+    try:
+        kk = int(k)
+    except (TypeError, ValueError):
+        kk = 3
+    kk = max(0, kk)
+    moms = [_num(m) for m in (momentum or [])]
+    ranked: list[dict] = []
+    prev = 0.0
+    for pos, m in enumerate(moms):
+        ranked.append({"pos": pos, "delta": float(m - prev)})
+        prev = m
+    ranked.sort(key=lambda r: (-abs(r["delta"]), r["pos"]))
+    return ranked[:kk]
+
+
+def spread_of_effect(effect) -> tuple:
+    """Per-turn judge spread: mean reading ``rel_spread``, else disagreement.
+
+    Returns ``(value, source)`` with source one of ``"rel_spread"``,
+    ``"disagreement"``, or ``None`` when the effect carries neither field.
+    """
+    if not isinstance(effect, dict):
+        return (None, None)
+    vals: list[float] = []
+    for r in effect.get("readings", []) or []:
+        if isinstance(r, dict) and "rel_spread" in r:
+            try:
+                vals.append(float(r["rel_spread"]))
+            except (TypeError, ValueError):
+                pass
+    if vals:
+        return (sum(vals) / len(vals), "rel_spread")
+    if "disagreement" in effect:
+        try:
+            return (float(effect["disagreement"]), "disagreement")
+        except (TypeError, ValueError):
+            return (None, None)
+    return (None, None)
+
+
+def resolve_audio_src(audio, out, copy_audio=True) -> str | None:
+    """HTML-side audio reference for ``--audio`` (never the raw CLI string).
+
+    With ``copy_audio`` (default) the file is copied next to the HTML as
+    ``<out stem>.audio.<ext>`` and referenced relatively; when the file does
+    not exist its basename is used so the page still points at a sibling.
+    With ``--no-copy-audio`` the reference is ``relpath(audio, out_dir)``.
+    """
+    if not audio:
+        return None
+    out_path = Path(str(out))
+    out_dir = out_path.parent
+    if copy_audio:
+        src = Path(str(audio))
+        if src.is_file():
+            dest = out_dir / (out_path.stem + ".audio" + src.suffix)
+            dest.write_bytes(src.read_bytes())
+            return os.path.relpath(str(dest), str(out_dir))
+        return src.name
+    return os.path.relpath(str(audio), str(out_dir))
 
 
 def _r100(x) -> int:
@@ -244,6 +309,8 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
     last = {sp: 50.0 for sp in speakers}
     trail: list[dict] = []
     turns_out: list[dict] = []
+    spreads: list = []
+    spread_srcs: list = []
     for pos, e in enumerate(tv):
         idx = e.get("index", pos)
         eff = eff_by_index.get(idx, {})
@@ -254,10 +321,15 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
         piv = pivot_by_index.get(idx, {})
         mark = piv.get("mark") if piv.get("mark") in MARKS else None
         span = timings.get(idx)
+        spread_val, spread_src = spread_of_effect(eff)
+        spreads.append(float(spread_val) if spread_val is not None else None)
+        spread_srcs.append(spread_src)
         rec = {
             "index": idx,
             "speaker": e.get("speaker", ""),
             "display": names.get(e.get("speaker"), e.get("speaker", "")),
+            "spread": float(spread_val) if spread_val is not None else None,
+            "spread_src": spread_src,
             "text": e.get("text", ""),
             "moves": list(e.get("moves", []) or []),
             "value": float(e.get("value", 0.0)),
@@ -305,6 +377,28 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
     audio = None
     if audio_src:
         audio = {"src": str(audio_src), "linked": bool(timings)}
+    if "rel_spread" in spread_srcs:
+        band_src = "rel_spread"
+    elif "disagreement" in spread_srcs:
+        band_src = "disagreement"
+    else:
+        band_src = None
+    swings = hero_swings(momentum, 3)
+    hero_top = None
+    runners: list[dict] = []
+    for rank, sw in enumerate(swings):
+        pos = sw["pos"]
+        if pos < 0 or pos >= len(turns_out):
+            continue
+        t = turns_out[pos]
+        entry = {"pos": pos, "index": t["index"], "speaker": t["speaker"],
+                 "display": t["display"], "delta": sw["delta"]}
+        if rank == 0:
+            entry["text80"] = (t["text"] or "")[:80]
+            entry["line"] = t.get("line_ko") or t.get("line_en") or None
+            hero_top = entry
+        else:
+            runners.append(entry)
     return {
         "id": item_id,
         "title": title,
@@ -312,7 +406,11 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
         "mode": mode,
         "speakers": speakers,
         "colors": colors,
+        "display_names": {sp: names.get(sp, sp) for sp in speakers},
         "momentum": momentum,
+        "hero": {"top": hero_top, "runners": runners},
+        "spread": spreads,
+        "spread_src": band_src,
         "standings": trail,
         "bands": bands,
         "square": {"x_sp": x_sp, "y_sp": y_sp, "xs": xs, "ys": ys,
@@ -340,21 +438,24 @@ h2{font-size:16px;margin:0 0 10px}
 .layout{display:flex;flex-direction:column;gap:14px;padding-bottom:28px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;
   padding:14px;min-width:0;overflow:hidden}
-#tide,#square{width:100%;height:auto;display:block;max-width:100%}
+#tide{width:100%;height:auto;display:block;max-width:100%}
+.sq-wrap{overflow-x:auto;max-width:100%}
+#square{display:block}
+.sq-axis{fill:var(--muted);font-size:13px}
 .tide-a{fill:var(--a);opacity:.55}
 .tide-b{fill:var(--b);opacity:.55}
 .tide-line{fill:none;stroke:var(--fg);stroke-width:1.5;opacity:.8}
 .band{stroke:none;opacity:.8}
 .mid{stroke:#4a525c;stroke-width:1;stroke-dasharray:4 3}
-.axis-tx{fill:var(--muted);font-size:10px}
+.axis-tx{fill:var(--muted);font-size:12px}
 .dot{stroke:var(--bg);stroke-width:1.5;cursor:default}
-.mark-g{font-size:11px;font-weight:700;fill:var(--fg)}
+.mark-g{font-size:14px;font-weight:700;fill:var(--fg);paint-order:stroke;stroke:var(--bg);stroke-width:3px}
 .sq-trail{fill:none;stroke:var(--muted);stroke-width:1.5;stroke-dasharray:2 3}
 .sq-dot{fill:var(--muted)}
 .sq-last{fill:var(--accent);stroke:var(--fg);stroke-width:1.5}
 .sq-now{fill:none;stroke:#fff;stroke-width:2}
 .sq-grid{stroke:#21262d;stroke-width:1}
-.sq-corner{fill:var(--muted);font-size:11px}
+.sq-corner{fill:var(--muted);font-size:13px}
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
 .controls button{border:1px solid var(--border);background:var(--bg);color:var(--fg);
   border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer}
@@ -385,7 +486,7 @@ h2{font-size:16px;margin:0 0 10px}
 .badge[data-mark="??"]{background:var(--bad);color:#fff;border-color:var(--bad)}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
 .lg{display:inline-flex;align-items:center;gap:5px}
-#settle{font-size:15px;font-weight:700;margin:8px 0 2px}
+#settle{font-size:14px;font-weight:700;margin:8px 0 2px}
 #likeness{color:var(--muted);font-size:13px;margin:0 0 4px}
 #guessCard{border-color:var(--mid)}
 #guessText{overflow-wrap:break-word}
@@ -393,6 +494,21 @@ h2{font-size:16px;margin:0 0 10px}
 #guessResult{color:var(--muted);font-size:13px}
 audio{width:100%;margin-top:10px}
 .muted{color:var(--muted)}
+.conf-band{fill:#fff;opacity:.14;stroke:none}
+.sw{display:inline-block;width:10px;height:10px;border-radius:3px}
+#hero{border:1px solid var(--border);border-radius:10px;padding:8px 10px;
+  margin-bottom:10px;transition:border-color .3s ease,background-color .3s ease}
+#hero.reached{border-color:var(--accent);background:#16202e}
+.hero-main{font-size:14px;overflow-wrap:break-word}
+.hero-line{font-size:13px;color:var(--muted);margin-top:2px;overflow-wrap:break-word}
+.hero-sub{font-size:12px;color:var(--muted);margin-top:2px}
+.dot.auto-hide{opacity:0;transition:opacity .2s ease}
+#tide:hover .dot.auto-hide{opacity:1}
+.pulse{fill:none;stroke:var(--accent);stroke-width:2}
+@media (prefers-reduced-motion:reduce){
+  #hero{transition:none}
+  .dot.auto-hide{transition:none}
+}
 """
 
 _JS = """(function(){
@@ -408,7 +524,13 @@ var timer=null;
 var lastTick=0;
 var guessOn=false;
 var gIdx=0,gHits=0;
-var RATE=1/1.1;
+var RATE=1/0.3;
+var REDUCED=(typeof matchMedia==="function")&&
+  matchMedia("(prefers-reduced-motion: reduce)").matches;
+var markBorn={};
+var markAnimating=false;
+var markAnimQueued=false;
+var pulseT=-1e9;
 function $(id){return document.getElementById(id);}
 function el(tag,cls,text){
   var e=document.createElement(tag);
@@ -442,11 +564,80 @@ function smoothD(pts){
 }
 function tipText(t){
   var s="#"+t.index+" "+(t.display||t.speaker)+" · panel "+
-    Math.round(t.raw100)+" · "+(t.text||"");
+    Math.round(t.raw100);
+  if(t.spread!==null&&t.spread!==undefined){
+    var tsrc=t.spread_src||data.spread_src;
+    if(tsrc==="disagreement")s+=" · 확신도: 심사위원 의견 불일치 "+
+      Number(t.spread).toFixed(2);
+    else s+=" · 확신도: 심사위원 분포 퍼짐 "+Math.round(t.spread);
+  }
+  s+=" · "+(t.text||"");
   var line=t.line_ko||t.line_en||"";
   if(line)s+=" · "+line;
   if(s.length>220)s=s.slice(0,217)+"…";
   return s;
+}
+function heroPos(){
+  if(data.hero&&data.hero.top&&typeof data.hero.top.pos==="number")
+    return data.hero.top.pos;
+  return -1;
+}
+function easeOutBack(t){
+  t=Math.max(0,Math.min(1,t));
+  var c1=1.70158,c3=c1+1;
+  return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2);
+}
+function markScale(age){
+  if(!(age>=0)||age>=350)return 1;
+  return easeOutBack(age/350);
+}
+function queueMarkFrame(){
+  if(REDUCED||markAnimQueued)return;
+  markAnimQueued=true;
+  var fire=function(){markAnimQueued=false;renderTide();};
+  if(typeof requestAnimationFrame==="function")requestAnimationFrame(fire);
+  else setTimeout(fire,50);
+}
+function finishMarks(){
+  if(markAnimating)queueMarkFrame();
+}
+function spreadPx(sp,src){
+  if(sp===null||sp===undefined)return 0;
+  var v=Number(sp);
+  if(isNaN(v))return 0;
+  if(src==="disagreement"){
+    var d=Math.max(0,Math.min(1,v));
+    return 2+12*d;
+  }
+  if(v<=10)return 2;
+  if(v>=25)return 14;
+  return 2+(v-10)*12/15;
+}
+function bandD(pts){
+  if(!pts.length||!data.spread_src)return "";
+  var k=Math.max(0,Math.min(N,shown));
+  var idx=Math.floor(k),fr=smoothstep(k-idx);
+  var up=Math.min(idx,N);
+  var hw=[];
+  for(var i=0;i<up;i++)
+    hw.push(spreadPx(turns[i].spread,turns[i].spread_src||data.spread_src));
+  if(idx<N){
+    var hN=spreadPx(turns[idx].spread,turns[idx].spread_src||data.spread_src);
+    var hP=(idx>0)?
+      spreadPx(turns[idx-1].spread,turns[idx-1].spread_src||data.spread_src):hN;
+    hw.push(hP+(hN-hP)*fr);
+  }
+  var any=false;
+  for(var j=0;j<hw.length;j++)if(hw[j]>0)any=true;
+  if(!any||hw.length<2||pts.length<2)return "";
+  var top=[],bot=[];
+  for(var p=0;p<pts.length;p++){
+    top.push([pts[p][0],pts[p][1]-hw[p]]);
+    bot.push([pts[p][0],pts[p][1]+hw[p]]);
+  }
+  var rev=bot.slice().reverse();
+  return smoothD(top)+"L"+rev[0][0].toFixed(1)+","+rev[0][1].toFixed(1)+
+    smoothD(rev).slice(1)+"Z";
 }
 var TW=640,TH=300,padL=46,padR=14,padT=26,padB=22;
 var tMid=(padT+TH-padB)/2,tAmp=(TH-padT-padB)/2/3.2;
@@ -482,7 +673,9 @@ function renderTide(){
   zl.setAttribute("class","mid");
   svg.appendChild(zl);
   if(!N)return;
-  if(data.mode==="bands"){renderBands(svg);return;}
+  for(var mk in markBorn){if(Number(mk)>=shown)delete markBorn[mk];}
+  markAnimating=false;
+  if(data.mode==="bands"){renderBands(svg);finishMarks();return;}
   var pts=tidePts();
   if(pts.length>=2){
     var d=smoothD(pts);
@@ -495,6 +688,13 @@ function renderTide(){
     bot.setAttribute("d",d+"L"+x1+","+(TH-padB)+"L"+x0+","+(TH-padB)+"Z");
     bot.setAttribute("class","tide-b");
     svg.appendChild(bot);
+    var bd=bandD(pts);
+    if(bd){
+      var band=svgEl("path");
+      band.setAttribute("d",bd);
+      band.setAttribute("class","conf-band");
+      svg.appendChild(band);
+    }
     var line=svgEl("path");
     line.setAttribute("d",d);
     line.setAttribute("class","tide-line");
@@ -502,28 +702,61 @@ function renderTide(){
   }
   var M=data.momentum||[];
   for(var i=0;i<N&&i<shown;i++){
-    addDot(svg,turns[i],tX(i),tY(M[i]||0));
+    addDot(svg,turns[i],tX(i),tY(M[i]||0),i);
   }
   addXLabels(svg);
+  for(var m2=0;m2<N&&m2<shown;m2++){
+    if(turns[m2].mark)addMark(svg,turns[m2],tX(m2),tY(M[m2]||0),m2);
+  }
+  finishMarks();
 }
-function addDot(svg,t,cx,cy){
+function addDot(svg,t,cx,cy,pos){
+  var now=(typeof performance!=="undefined"&&performance.now)?
+    performance.now():0;
+  var hp=heroPos();
   var c=svgEl("circle");
   c.setAttribute("cx",cx.toFixed(1));c.setAttribute("cy",cy.toFixed(1));
   c.setAttribute("r",t.mark?"6":"4");
-  c.setAttribute("class","dot");
+  c.setAttribute("class",(!t.mark&&N>40)?"dot auto-hide":"dot");
   c.style.fill=data.colors[t.speaker]||"#999";
   var tip=svgEl("title");
   tip.textContent=tipText(t);
   c.appendChild(tip);
   svg.appendChild(c);
-  if(t.mark){
-    var g=svgEl("text");
-    g.setAttribute("x",cx.toFixed(1));g.setAttribute("y",(cy-10).toFixed(1));
-    g.setAttribute("text-anchor","middle");
-    g.setAttribute("class","mark-g");
-    g.textContent=t.mark;
-    svg.appendChild(g);
+  if(pos===hp&&hp>=0&&!REDUCED){
+    var age=now-pulseT;
+    if(age>=0&&age<700){
+      var pr=age/700;
+      var ring=svgEl("circle");
+      ring.setAttribute("cx",cx.toFixed(1));ring.setAttribute("cy",cy.toFixed(1));
+      ring.setAttribute("r",(6+12*pr).toFixed(1));
+      ring.setAttribute("class","pulse");
+      ring.style.opacity=((1-pr)*0.9).toFixed(2);
+      svg.appendChild(ring);
+    }
   }
+}
+function addMark(svg,t,cx,cy,pos){
+  if(!t.mark)return;
+  var g=svgEl("text");
+  g.setAttribute("x",cx.toFixed(1));g.setAttribute("y",(cy-10).toFixed(1));
+  g.setAttribute("text-anchor","middle");
+  g.setAttribute("class","mark-g");
+  g.textContent=t.mark;
+  if(!REDUCED&&(typeof performance!=="undefined"&&performance.now)){
+    var now=performance.now();
+    if(markBorn[pos]===undefined)markBorn[pos]=now;
+    var ma=now-markBorn[pos];
+    var s=markScale(ma);
+    if(ma>=0&&ma<350&&s!==1){
+      var gx=cx.toFixed(1),gy=(cy-10).toFixed(1);
+      g.setAttribute("transform","translate("+gx+" "+gy+") scale("+
+        s.toFixed(3)+") translate("+(-cx).toFixed(1)+" "+
+        (-(cy-10)).toFixed(1)+")");
+      markAnimating=true;
+    }
+  }
+  svg.appendChild(g);
 }
 function addXLabels(svg){
   var step=Math.max(1,Math.floor(N/8));
@@ -589,9 +822,16 @@ function renderBands(svg){
     var ys2=cumAt(fr,S,j);
     var si=S.indexOf(turns[j].speaker);
     if(si<0)si=0;
-    addDot(svg,turns[j],tX(j),(ys2[si]+ys2[si+1])/2);
+    addDot(svg,turns[j],tX(j),(ys2[si]+ys2[si+1])/2,j);
   }
   addXLabels(svg);
+  for(var k2=0;k2<N&&k2<shown;k2++){
+    if(!turns[k2].mark)continue;
+    var ys3=cumAt(fr,S,k2);
+    var s3=S.indexOf(turns[k2].speaker);
+    if(s3<0)s3=0;
+    addMark(svg,turns[k2],tX(k2),(ys3[s3]+ys3[s3+1])/2,k2);
+  }
 }
 function curStands(){
   var S=data.speakers||[];
@@ -614,13 +854,14 @@ function renderStands(){
     box.appendChild(d);
   }
 }
-var SW=360,SH=300,sqL=40,sqR=16,sqT=30,sqB=34;
+var SW=360,SH=320,sqL=40,sqR=16,sqT=34,sqB=54;
 function sqX(v,lo,hi){return sqL+(Math.max(lo,Math.min(hi,v))-lo)/(hi-lo)*(SW-sqL-sqR);}
 function sqY(v,lo,hi){return sqT+(1-(Math.max(lo,Math.min(hi,v))-lo)/(hi-lo))*(SH-sqT-sqB);}
 function renderSquare(){
   var svg=$("square");
   while(svg.firstChild)svg.removeChild(svg.firstChild);
   svg.setAttribute("viewBox","0 0 "+SW+" "+SH);
+  svg.setAttribute("width",SW);svg.setAttribute("height",SH);
   svg.setAttribute("role","img");
   svg.setAttribute("aria-label","standing square");
   var sq=data.square||{};
@@ -638,7 +879,7 @@ function renderSquare(){
     gl2.setAttribute("class","sq-grid");
     svg.appendChild(gl2);
     var lx=svgEl("text");
-    lx.setAttribute("x",sqX(grid[g],lo,hi));lx.setAttribute("y",SH-8);
+    lx.setAttribute("x",sqX(grid[g],lo,hi));lx.setAttribute("y",SH-sqB+16);
     lx.setAttribute("text-anchor","middle");
     lx.setAttribute("class","axis-tx");
     lx.textContent=""+grid[g];
@@ -668,15 +909,21 @@ function renderSquare(){
   var n=Math.min(xs.length,ys.length);
   if(!n)return;
   var xl=svgEl("text");
-  xl.setAttribute("x",(sqL+SW-sqR)/2);xl.setAttribute("y",SH-8+14);
+  xl.setAttribute("x",(sqL+SW-sqR)/2);xl.setAttribute("y",SH-12);
   xl.setAttribute("text-anchor","middle");
-  xl.setAttribute("class","axis-tx");
-  xl.textContent=(sq.x_sp||"A")+" 잔고";
+  xl.setAttribute("class","sq-axis");
+  xl.textContent=(sq.x_sp||"A")+" 잔고 →";
   svg.appendChild(xl);
+  var yl=svgEl("text");
+  yl.setAttribute("x",sqL);yl.setAttribute("y",16);
+  yl.setAttribute("text-anchor","start");
+  yl.setAttribute("class","sq-axis");
+  yl.textContent=(sq.y_sp||"B")+" 잔고 ↑";
+  svg.appendChild(yl);
   var pts=[];
-  for(var i=0;i<n;i++)pts.push(sqX(xs[i],lo,hi).toFixed(1)+","+sqY(ys[i],lo,hi).toFixed(1));
-  var trail=svgEl("polyline");
-  trail.setAttribute("points",pts.join(" "));
+  for(var i=0;i<n;i++)pts.push([sqX(xs[i],lo,hi),sqY(ys[i],lo,hi)]);
+  var trail=svgEl("path");
+  trail.setAttribute("d",smoothD(pts));
   trail.setAttribute("class","sq-trail");
   svg.appendChild(trail);
   for(var j=0;j<n-1;j++){
@@ -805,11 +1052,21 @@ function render(scroll){
   renderStands();
   updateTurns(scroll);
   updateComments();
+  var hb=$("hero");
+  if(hb){var hp=heroPos();hb.classList.toggle("reached",hp>=0&&shown>hp);}
   var sc=$("scrub");
   if(sc&&document.activeElement!==sc)sc.value=shown;
 }
 function tick(){
   var now=performance.now();
+  if(REDUCED){
+    if(now-lastTick<300)return;
+    lastTick=now;
+    shown=Math.min(N,Math.floor(shown)+1);
+    if(shown>=N){shown=N;pause();}
+    render(true);
+    return;
+  }
   var dt=(now-lastTick)/1000;
   lastTick=now;
   shown+=dt*speed*RATE;
@@ -938,6 +1195,26 @@ function init(){
     }
     render(false);
   });
+  var hb2=$("heroBtn");
+  if(hb2){
+    hb2.addEventListener("click",function(){
+      var hp=heroPos();
+      if(hp<0||hp>=N)return;
+      pause();
+      shown=Math.min(N,hp+1);
+      pulseT=(typeof performance!=="undefined"&&performance.now)?
+        performance.now():0;
+      render(true);
+      if(!REDUCED){
+        var iv=setInterval(function(){
+          render(false);
+          var t2=(typeof performance!=="undefined"&&performance.now)?
+            performance.now():0;
+          if(t2-pulseT>700){clearInterval(iv);render(false);}
+        },50);
+      }
+    });
+  }
   $("guessToggle").addEventListener("click",function(){setGuess(!guessOn);});
   var gb=document.querySelectorAll(".gbtn");
   for(var k=0;k<gb.length;k++){
@@ -989,6 +1266,60 @@ def _legend_html() -> str:
     return "".join(parts)
 
 
+def _speaker_legend_html(view) -> str:
+    speakers = view.get("speakers") or []
+    if len(speakers) < 3:
+        return ""
+    colors = view.get("colors") or {}
+    names = view.get("display_names") or {}
+    parts = []
+    for sp in speakers:
+        disp = names.get(sp, sp)
+        col = colors.get(sp, "#999")
+        parts.append(
+            '<span class="lg"><span class="sw" style="background:'
+            f'{html.escape(str(col), quote=True)}"></span> '
+            f"{html.escape(str(disp))}</span>"
+        )
+    return "".join(parts)
+
+
+def _hero_html(view) -> str:
+    hero = view.get("hero") if isinstance(view.get("hero"), dict) else None
+    top = hero.get("top") if hero else None
+    if not isinstance(top, dict):
+        return ""
+    disp = top.get("display") or top.get("speaker", "")
+    label = f"판이 갈린 수 · #{top.get('index')} {disp}"
+    parts = ['<div id="hero">',
+             "<div class=\"hero-main\"><strong>"
+             + html.escape(label)
+             + "</strong> — "
+             + html.escape(str(top.get("text80") or ""))
+             + "</div>"]
+    if top.get("line"):
+        parts.append("<div class=\"hero-line\">"
+                     + html.escape(str(top["line"])) + "</div>")
+    bits = []
+    for r in hero.get("runners") or []:
+        if not isinstance(r, dict):
+            continue
+        rd = r.get("display") or r.get("speaker", "")
+        try:
+            delta = float(r.get("delta", 0.0))
+        except (TypeError, ValueError):
+            delta = 0.0
+        bits.append(f"#{r.get('index')} {html.escape(str(rd))} "
+                    f"(ΔM {delta:+.1f})")
+    if bits:
+        parts.append("<div class=\"hero-sub\">그다음 변동: "
+                     + " · ".join(bits) + "</div>")
+    parts.append("<div class=\"controls\"><button id=\"heroBtn\" "
+                 "type=\"button\">그 장면 보기</button></div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def render_html(view) -> str:
     view = view if isinstance(view, dict) else {}
     blob = json.dumps(view, ensure_ascii=False, separators=(",", ":"))
@@ -1014,7 +1345,8 @@ def render_html(view) -> str:
         "</header>\n"
         '<main class="layout">\n'
         '<section class="card"><h2>밀물/썰물 · Tide</h2>'
-        '<div id="stands"></div>'
+        + _hero_html(view)
+        + '<div id="stands"></div>'
         '<svg id="tide"></svg>'
         '<div class="controls">'
         '<button id="play" type="button">▶</button>'
@@ -1027,7 +1359,8 @@ def render_html(view) -> str:
         '<span id="tally">나 0 / 해설자 0</span>'
         "</div>\n"
         + audio_tag + "\n"
-        + '<div class="legend">' + _legend_html() + "</div></section>\n"
+        + '<div class="legend">' + _speaker_legend_html(view)
+        + _legend_html() + "</div></section>\n"
         '<section class="card" id="guessCard" style="display:none">'
         "<h2>다음 수 맞히기 · Guess mode</h2>"
         '<p id="guessText"></p>'
@@ -1038,7 +1371,8 @@ def render_html(view) -> str:
         "</div>\n"
         '<p id="guessResult"></p></section>\n'
         '<section class="card"><h2>정산 사각형 · Square</h2>'
-        '<svg id="square"></svg>'
+        '<div class="sq-wrap">'
+        '<svg id="square" width="360" height="320"></svg></div>'
         '<p id="settle"></p><p id="likeness"></p>'
         '<p class="note">axes 20–80 (zoomed); dotted trail of all turns, '
         "last point large</p></section>\n"
@@ -1063,6 +1397,10 @@ def main(argv=None) -> None:
     ap.add_argument("--casino", default=None)
     ap.add_argument("--audio-record", default=None)
     ap.add_argument("--audio", default=None)
+    ap.add_argument("--no-copy-audio", dest="copy_audio", action="store_false",
+                    default=True,
+                    help="reference --audio via relpath instead of copying "
+                         "it next to the HTML")
     ap.add_argument("--names", default=None,
                     help="JSON object mapping speaker labels to display names")
     args = ap.parse_args(argv)
@@ -1089,17 +1427,18 @@ def main(argv=None) -> None:
             names = json.loads(args.names)
         except (TypeError, ValueError):
             names = None
+    out_path = Path(args.out)
+    if str(out_path.parent) and str(out_path.parent) != ".":
+        out_path.parent.mkdir(parents=True, exist_ok=True)
     view = build_view2(
         item,
         commentary,
         outcomes=outcomes,
         audio_record=audio_record,
-        audio_src=args.audio,
+        audio_src=resolve_audio_src(args.audio, out_path,
+                                    copy_audio=args.copy_audio),
         names=names,
     )
-    out_path = Path(args.out)
-    if str(out_path.parent) and str(out_path.parent) != ".":
-        out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(view), encoding="utf-8")
 
 
