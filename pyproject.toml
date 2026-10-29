@@ -28,6 +28,8 @@ uptake-stakes = "forecaster.stakes:main"
 uptake-value = "forecaster.valuemodel:main"
 uptake-rescore = "forecaster.rescore:main"
 uptake-scale = "forecaster.scalecheck:main"
+uptake-pairwise = "forecaster.pairwise:main"
+uptake-audio-panel = "forecaster.audiopanel:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]
