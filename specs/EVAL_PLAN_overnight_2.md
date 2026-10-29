@@ -104,3 +104,59 @@ Evaluate on held-out (and held-out 2 when done):
 - V2: early warning — Spearman at the turn where 50% of the dialogue's turns are done. CI lower > 0 → the curve says something before the end.
 - V3: pivot by the value model = turn with the largest |Δ predicted value| for either side; D1-style Spearman of that Δ (attributed to the
   speaker) vs opp likeness, next to D1. Reported only.
+
+## Amendment 6 (2026-10-29 07:55 KST — scale resolution + residual test, written BEFORE any amendment-6 run or new analysis)
+Motivation: C6 not supported on both held-out sets (panel curve ≈ move-type average table), and the panel scale is coarse
+(relationship −2..+2 used as −1/0/+1 in practice; face 0..2 → only ≤ 0; "!!" impossible). Approved advice: finer resolution,
+residual test, power analysis. Same goal as before: one 형세 model, statistical evaluation as the core.
+
+**Logprob check (done before this text, 2 rejected requests, $0):** the Meta API refuses `logprobs` for muse-spark-1.3-contributor
+("logprobs is not supported with reasoning"; effort `none` not offered, `minimal`/`low` also refused). → option (a) expected value over
+scale-point probabilities is not possible; option (b) is used.
+
+### Conditions (board panel only; move tags reused from the existing held-out records, no re-tagging)
+| id | scale | n | turn value |
+|---|---|---|---|
+| P0 current | relationship −2..+2, face_threat 0..2 (as run) | 3 | rel + (−face) (existing readings, no new calls) |
+| P1 current n=5 | same prompt | 5 | same |
+| P2 fine100 | relationship_after 0..100 (50 = unchanged, 0 much colder, 100 much warmer); face 0..100 (50 = no effect, 0 severe threat to my face, 100 strongly affirms my face) | 3 | (rel−50)/25 + (face−50)/25 |
+| P3 seven | relationship_shift −3..+3; face_effect −3..+3 (negative = threat, positive = affirms) | 3 | (2/3)·rel + (2/3)·face |
+Same model (muse-spark-1.3-contributor), k=1, effort low, window 6, same stance mix, temperature 1.0, same listener rule.
+
+### Step 1 — pilot (paired)
+40 dialogues sampled from held-out 2 (overnight_2b, 300) with `random.Random(6).sample(sorted ids, 40)`; the same 40 in every condition.
+Per condition, on these 40: distinct turn values; distinct per-reading values; share of readings at each axis endpoint;
+z of turn values using the condition's own mean/sd over the 40 dialogues → share of turns with z ≥ +2 ("!!" possible?) and z ≤ −2,
+max z; parse-failure rate; Spearman of turn values vs P0 on the same turns; ICC(1) of member values within turns and
+Spearman–Brown reliability for n=3 and n=5; cost per dialogue (metered); C1 and C6 difference with CIs (reported only, n=40 underpowered).
+**Selection rule (fixed now):** a finer scale "improves resolution" if parse failure ≤ 5% AND distinct turn values ≥ 2× P0 AND
+share of turns with z ≥ +2 ≥ 0.5%. If both P2 and P3 qualify, S* = the one with higher Spearman–Brown reliability at n=3; tie → P2.
+If neither qualifies → no full run; report pilot only. n=5 (P1) is evaluated in the pilot only (observed vs predicted reliability gain);
+the full run uses n=3 for budget reasons.
+
+### Step 2 — full run (only if S* exists)
+S* on all 300 held-out 2 dialogues; then held-out 1 (overnight_2, 134) if metered spend so far + estimate ≤ $7.5.
+Fit set for μ and the move-type table = overnight_1 as before (Spearman-based metrics are invariant to μ; the table is scale-independent
+as a baseline). Metrics, dialogue-level cluster bootstrap b=2000, seed 0, 95% percentile CI:
+- C1(S*) = Spearman(reception, opp likeness).
+- **C6diff(S*)** = ρ(reception S*) − ρ(tag-value), paired. 
+- ΔS* = ρ(reception S*) − ρ(reception P0), paired, same dialogues. Reported.
+- **R1 (residual, primary)** = partial Spearman ρ(reception, opp likeness | tag-value): rank the three variables, regress the ranks of
+  reception and of likeness on the rank of tag-value (with intercept), Pearson of the two residual vectors. Computed for P0 on held-out 1
+  and held-out 2 (existing data, no calls) and for S*.
+- R2 (reported) = same partial Spearman with extended controls: tag-value, X's turn count, and X's share of turns containing each move type
+  (move types present in ≥ 1% of fit-set turns).
+- R3 (reported) = OLS on rank-standardised variables, likeness ~ tag-value + reception: coefficient of reception and ΔR² over tag-value alone, with CIs.
+- R4 (reported, P0 only, same scale as the table) = Spearman(mean over X's turns of [turn value − μ − table value of the turn's moves], opp likeness).
+
+### Step 3 — power (no calls)
+From the held-out 2 bootstrap replicates of C6diff: SE₃₀₀ = sd of replicates; dialogues needed for 80% power (two-sided α = 0.05, i.e. CI lower > 0)
+n = 300·(SE₃₀₀·(1.960+0.842)/δ)² for δ = +0.03 and +0.06 (assumes SE ∝ 1/√n). Same for P0 and S*. Also for R1.
+
+### Decision rules
+- **Adopt the finer scale** for the 형세 readings if C6diff(S*) CI lower > 0 OR R1(S*) CI lower > 0 on held-out 2 (held-out 1 reported as replication).
+- Panel role: if R1(P0) CI lower > 0 on both held-out sets → the coarse panel already carries outcome information beyond the move type;
+  keep the panel term in the value model. If R1 is not supported for P0 and S* → curve = move tags + value table (cheap); panel is used for
+  explanation only, and the value model (amendment 5, agreed as the 형세 direction) drops the reception features.
+- Several metrics are tested; only C6diff(S*) and R1 carry decisions. Everything else is reported without a verdict.
+- Budget: $8 metered for all amendment-6 calls (hard cap via the meter); stop and report whatever finished if reached.
