@@ -87,13 +87,32 @@ def build_listener_messages(turns, i, listener: str, receiver: Receiver, window=
     ]
 
 
-def _call_board(client, messages, model, meta=None):
-    if meta is None or not getattr(client, "accepts_meta", False):
-        return client.complete(messages, model, 1.0)
+def _call_board(client, messages, model, meta=None, response_format=None):
+    wants_meta = meta is not None and getattr(client, "accepts_meta", False)
+    if response_format is None:
+        if not wants_meta:
+            return client.complete(messages, model, 1.0)
+        try:
+            return client.complete(messages, model, 1.0, meta=meta)
+        except TypeError:
+            return client.complete(messages, model, 1.0)
+    if wants_meta:
+        try:
+            return client.complete(messages, model, 1.0, meta=meta,
+                                   response_format=response_format)
+        except TypeError:
+            pass
     try:
-        return client.complete(messages, model, 1.0, meta=meta)
+        return client.complete(messages, model, 1.0,
+                               response_format=response_format)
     except TypeError:
-        return client.complete(messages, model, 1.0)
+        pass
+    if wants_meta:
+        try:
+            return client.complete(messages, model, 1.0, meta=meta)
+        except TypeError:
+            pass
+    return client.complete(messages, model, 1.0)
 
 
 def _read_one(client, turns, i, listener, receiver, s, model, window,

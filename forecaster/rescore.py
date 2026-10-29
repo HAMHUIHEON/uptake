@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures as cf
 import copy
 import json
+import math
 import random
 import sys
 from collections import Counter, deque
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from . import batch
 from . import board
+from . import schemas as SCH
 from .labels import NEXT_ACTIONS
 from .panel import DEFAULT_MIX, build_panel
 from .reader import DEFAULT_MODEL, MuseClient
@@ -22,7 +24,7 @@ from .transcribe import Turn
 from .types import Receiver
 from .usage import BudgetExceeded, Meter
 
-SCALES = ("v2", "fine100", "seven")
+SCALES = ("v2", "fine100", "seven", "dist5")
 
 
 def build_scaled_messages(turns, i, listener: str, receiver: Receiver, scale, window=6) -> list[dict]:
@@ -42,6 +44,16 @@ def build_scaled_messages(turns, i, listener: str, receiver: Receiver, scale, wi
                     "(much warmer) toward the speaker of the TARGET turn, 0 = unchanged")
         face_line = ("- face_effect must be an integer from -3 (severe threat to your face) "
                      "to 3 (strongly affirms your face), 0 = no effect")
+    elif scale == "dist5":
+        keys = "next_action, p_rel, p_face, understood"
+        rel_line = ("- p_rel must be an array of 5 numbers, the probability that how you "
+                    "feel toward the speaker of the TARGET turn falls in each bin "
+                    "0-20 (much colder), 20-40, 40-60 (about unchanged), 60-80, "
+                    "80-100 (much warmer); the 5 numbers must sum to 1")
+        face_line = ("- p_face must be an array of 5 numbers, the probability that what "
+                     "the TARGET turn does to your face (dignity, standing) falls in "
+                     "each bin 0-20 (severe threat), 20-40, 40-60 (no effect), 60-80, "
+                     "80-100 (strongly affirms); the 5 numbers must sum to 1")
     else:
         raise ValueError(f"bad scale: {scale!r}")
     system = (
@@ -80,6 +92,32 @@ def _coerce_num(value, lo: int, hi: int):
     return max(lo, min(hi, rounded))
 
 
+def _coerce_dist(value):
+    if not isinstance(value, (list, tuple)) or len(value) != 5:
+        return None
+    out: list[float] = []
+    for v in value:
+        if isinstance(v, bool):
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(f) or math.isinf(f) or f < 0:
+            return None
+        out.append(f)
+    total = sum(out)
+    if total <= 0:
+        return None
+    return [v / total for v in out]
+
+
+def _dist_stats(probs) -> tuple[float, float]:
+    ev = sum(p * m for p, m in zip(probs, SCH.DIST5_MIDPOINTS))
+    var = sum(p * (m - ev) ** 2 for p, m in zip(probs, SCH.DIST5_MIDPOINTS))
+    return float(ev), float(math.sqrt(var)) if var > 0 else 0.0
+
+
 def parse_scaled(raw, scale) -> dict | None:
     if scale not in SCALES:
         raise ValueError(f"bad scale: {scale!r}")
@@ -97,6 +135,26 @@ def parse_scaled(raw, scale) -> dict | None:
     nxt = str(obj.get("next_action", "")).strip().lower()
     if nxt not in NEXT_ACTIONS:
         return None
+    if scale == "dist5":
+        if "p_rel" not in obj or "p_face" not in obj:
+            return None
+        p_rel = _coerce_dist(obj.get("p_rel"))
+        p_face = _coerce_dist(obj.get("p_face"))
+        if p_rel is None or p_face is None:
+            return None
+        rel_ev, rel_spread = _dist_stats(p_rel)
+        face_ev, face_spread = _dist_stats(p_face)
+        return {
+            "next_action": nxt,
+            "rel_raw": rel_ev,
+            "face_raw": face_ev,
+            "rel_norm": float((rel_ev - 50) / 25),
+            "face_norm": float((face_ev - 50) / 25),
+            "rel_spread": float(rel_spread),
+            "face_spread": float(face_spread),
+            "p_rel": p_rel,
+            "p_face": p_face,
+        }
     if scale == "v2":
         rel_key, face_key = "relationship_shift", "face_threat"
         rel_lo, rel_hi = -2, 2
@@ -133,14 +191,18 @@ def parse_scaled(raw, scale) -> dict | None:
     }
 
 
-def _read_one_scaled(client, turns, i, listener, receiver, s, model, window, scale, item_id=""):
+def _read_one_scaled(client, turns, i, listener, receiver, s, model, window, scale,
+                   item_id="", structured=False):
     messages = build_scaled_messages(turns, i, listener, receiver, scale, window)
     meta = {"layer": "board", "scale": scale, "item": item_id, "turn": i,
             "listener": listener, "member": receiver.id,
             "stance": receiver.stance, "sample": s}
+    use_structured = bool(structured) or scale == "dist5"
+    rf = SCH.response_format(scale) if use_structured else None
     for _ in range(2):
         try:
-            raw = board._call_board(client, messages, model, meta)
+            raw = board._call_board(client, messages, model, meta,
+                                    response_format=rf)
         except BudgetExceeded:
             raise
         except Exception:
@@ -153,7 +215,8 @@ def _read_one_scaled(client, turns, i, listener, receiver, s, model, window, sca
 
 def evaluate_turns_scaled(client, turns, scale="v2", n=3, k=1, model=DEFAULT_MODEL,
                           stance_mix=DEFAULT_MIX, window=6, b=1000, seed=0,
-                          max_workers=8, move_tags=None, item_id="") -> list[dict]:
+                          max_workers=8, move_tags=None, item_id="",
+                          structured=False) -> list[dict]:
     if scale not in SCALES:
         raise ValueError(f"bad scale: {scale!r}")
     effects: list[dict] = []
@@ -181,13 +244,16 @@ def evaluate_turns_scaled(client, turns, scale="v2", n=3, k=1, model=DEFAULT_MOD
             if addr and addr != turn.speaker and addr in seen and addr != "unknown":
                 listeners = [addr]
         if not listeners:
-            effects.append({
+            lonely = {
                 "index": i, "speaker": turn.speaker, "text": turn.text,
                 "listeners": [], "relationship": (0.0, 0.0, 0.0),
                 "face": (0.0, 0.0, 0.0), "action_dist": {},
                 "disagreement": 0.0, "n_readings": 0, "readings": [],
                 "scale": scale, "n_expected": 0,
-            })
+            }
+            if scale == "dist5":
+                lonely["spread"] = 0.0
+            effects.append(lonely)
             continue
         tasks: list[tuple] = []
         for listener in listeners:
@@ -202,7 +268,8 @@ def evaluate_turns_scaled(client, turns, scale="v2", n=3, k=1, model=DEFAULT_MOD
                     tasks.append((listener, receiver, s))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [pool.submit(_read_one_scaled, client, turns, i, listener,
-                                   receiver, s, model, window, scale, item_id)
+                                   receiver, s, model, window, scale, item_id,
+                                   structured)
                        for listener, receiver, s in tasks]
             results = [f.result() for f in futures]
         readings = [r for r in results if r is not None]
@@ -219,15 +286,23 @@ def evaluate_turns_scaled(client, turns, scale="v2", n=3, k=1, model=DEFAULT_MOD
             if scale == "v2":
                 row["relationship_shift"] = r["rel_raw"]
                 row["face_threat"] = r["face_raw"]
+            elif scale == "dist5":
+                row["p_rel"] = list(r["p_rel"])
+                row["p_face"] = list(r["p_face"])
+                row["rel_spread"] = r["rel_spread"]
+                row["face_spread"] = r["face_spread"]
             readings_out.append(row)
         if not readings:
-            effects.append({
+            empty = {
                 "index": i, "speaker": turn.speaker, "text": turn.text,
                 "listeners": listeners, "relationship": (0.0, 0.0, 0.0),
                 "face": (0.0, 0.0, 0.0), "action_dist": {},
                 "disagreement": 0.0, "n_readings": 0, "readings": [],
                 "scale": scale, "n_expected": len(tasks),
-            })
+            }
+            if scale == "dist5":
+                empty["spread"] = 0.0
+            effects.append(empty)
             continue
         rel_clusters: dict[str, list[float]] = {}
         face_clusters: dict[str, list[float]] = {}
@@ -241,14 +316,18 @@ def evaluate_turns_scaled(client, turns, scale="v2", n=3, k=1, model=DEFAULT_MOD
         rel_ci = cluster_bootstrap_ci(rel_clusters, b=b, seed=seed)
         face_ci = cluster_bootstrap_ci(face_clusters, b=b, seed=seed)
         action_dist = {a: counts[a] / n_readings for a in counts}
-        effects.append({
+        effect = {
             "index": i, "speaker": turn.speaker, "text": turn.text,
             "listeners": listeners, "relationship": rel_ci, "face": face_ci,
             "action_dist": action_dist,
             "disagreement": board._disagreement(action_dist, n_readings),
             "n_readings": n_readings, "readings": readings_out,
             "scale": scale, "n_expected": len(tasks),
-        })
+        }
+        if scale == "dist5":
+            effect["spread"] = float(
+                sum(float(r["rel_spread"]) for r in readings) / len(readings))
+        effects.append(effect)
     return effects
 
 
@@ -286,14 +365,15 @@ def select_ids(src_dir, sample=None, sample_seed=6, ids_file=None) -> list[str]:
     return sorted_ids
 
 
-def rescore_item(client, record, out_dir, scale, n, k, model, inner_workers, window=6) -> dict:
+def rescore_item(client, record, out_dir, scale, n, k, model, inner_workers,
+                 window=6, structured=False) -> dict:
     turns = turns_from_record(record)
     moves = record.get("moves", []) or []
     item_id = record.get("id", "")
     effects = evaluate_turns_scaled(
         client, turns, scale=scale, n=n, k=k, model=model,
         window=window, max_workers=inner_workers, move_tags=moves,
-        item_id=item_id)
+        item_id=item_id, structured=structured)
     hits = board.forecast_hits(effects, moves)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -308,6 +388,7 @@ def rescore_item(client, record, out_dir, scale, n, k, model, inner_workers, win
         "gold": copy.deepcopy(record.get("gold")),
         "scale": scale,
         "n": n,
+        "structured": bool(structured) or scale == "dist5",
     }
     with open(out / f"{item_id}.json", "w", encoding="utf-8") as f:
         json.dump(record_out, f, ensure_ascii=False, indent=2)
@@ -337,6 +418,7 @@ def main(argv=None) -> None:
     ap.add_argument("--effort", default="low")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--window", type=int, default=6)
+    ap.add_argument("--structured", action="store_true", default=False)
     args = ap.parse_args(argv)
 
     src = Path(args.src)
@@ -363,7 +445,8 @@ def main(argv=None) -> None:
         with open(src / f"{cid}.json", encoding="utf-8") as f:
             record = json.load(f)
         return rescore_item(client, record, out, args.scale, args.n, args.k,
-                            args.model, args.inner_workers, window=args.window)
+                            args.model, args.inner_workers, window=args.window,
+                            structured=args.structured)
 
     summaries: list[dict] = []
     errors: list[dict] = []
@@ -425,6 +508,7 @@ def main(argv=None) -> None:
             "budget": args.budget, "workers": args.workers,
             "inner_workers": args.inner_workers, "effort": args.effort,
             "model": args.model, "window": args.window,
+            "structured": bool(args.structured),
         },
         "commit": batch._git_commit(),
     }

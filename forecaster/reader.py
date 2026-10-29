@@ -140,6 +140,10 @@ def read_panel(client, message, panel, k=5, model=DEFAULT_MODEL,
     return [r for r in results if r is not None]
 
 
+class StructuredOutputError(Exception):
+    """The API refused a structured-output request (HTTP 400)."""
+
+
 _RETRYABLE_NAMES = ("RateLimit", "Timeout", "Connection")
 
 
@@ -193,7 +197,7 @@ class MuseClient:
         self._tls.stats = value
 
     def complete(self, messages, model=DEFAULT_MODEL, temperature=1.0,
-                 reasoning_effort=None) -> str:
+                 reasoning_effort=None, response_format=None) -> str:
         if self.meter is not None:
             self.meter.check()
         if reasoning_effort is None:
@@ -201,6 +205,8 @@ class MuseClient:
         kwargs: dict = {"model": model, "messages": messages, "temperature": temperature}
         if reasoning_effort is not None:
             kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         retries = 0
         status_codes: list = []
         for attempt in range(self.max_retries + 1):
@@ -214,6 +220,14 @@ class MuseClient:
                     code = None
                 if code is not None:
                     status_codes.append(code)
+                if response_format is not None and code == 400:
+                    self.last_stats = {"retries": retries,
+                                       "status_codes": list(status_codes),
+                                       "prompt_tokens": 0,
+                                       "completion_tokens": 0}
+                    msg = getattr(exc, "message", None) or str(exc)
+                    raise StructuredOutputError(
+                        msg or "structured output refused (400)") from exc
                 if not _retryable(exc) or attempt >= self.max_retries:
                     self.last_stats = {"retries": retries,
                                        "status_codes": list(status_codes),

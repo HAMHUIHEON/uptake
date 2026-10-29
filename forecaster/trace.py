@@ -55,16 +55,29 @@ class LoggingClient:
         self.run_id = run_id
 
     def complete(self, messages, model, temperature,
-                 reasoning_effort=None, meta=None):
+                 reasoning_effort=None, meta=None, response_format=None):
         start = time.monotonic()
         raw = ""
         error = None
         try:
-            if reasoning_effort is None:
+            if reasoning_effort is None and response_format is None:
                 out = self.inner.complete(messages, model, temperature)
             else:
-                out = self.inner.complete(messages, model, temperature,
-                                          reasoning_effort=reasoning_effort)
+                kwargs: dict = {}
+                if reasoning_effort is not None:
+                    kwargs["reasoning_effort"] = reasoning_effort
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
+                try:
+                    out = self.inner.complete(messages, model, temperature,
+                                              **kwargs)
+                except TypeError:
+                    if reasoning_effort is None:
+                        out = self.inner.complete(messages, model, temperature)
+                    else:
+                        out = self.inner.complete(
+                            messages, model, temperature,
+                            reasoning_effort=reasoning_effort)
             raw = out if isinstance(out, str) else ("" if out is None else str(out))
             return out
         except Exception as exc:
@@ -81,6 +94,7 @@ class LoggingClient:
                 "latency_s": time.monotonic() - start,
                 "raw": raw,
                 "error": error,
+                "structured": response_format is not None,
             }
             stats = getattr(self.inner, "last_stats", None)
             if isinstance(stats, dict):
