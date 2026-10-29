@@ -259,3 +259,22 @@ needs an explicit cap raise (owner decision) and is otherwise reported as partia
 Reading: 1.2-contributor and 1.3-contributor are interchangeable as listeners on this pilot (reliability
 within 0.01, convergent ρ 0.91); 1.1 is both less reliable and ~12× dearer per dialogue. Per the
 pre-stated rule no model change follows. muse-spark-1.2 Standard: not completed (owner decision).
+
+#### P7-B result (19:18 KST) — value model 2×2, numbers from value_compare.md files (legacy = resid to 3 decimals everywhere: reparameterization confirmed)
+| fit→eval | scale | V1 [CI] | V1−C1 [CI] | V2 [CI] | V3 [CI] |
+|---|---|---|---|---|---|
+| overnight_1→overnight_2b | v2 | +0.418 [+0.336-+0.495] | +0.033 [-0.005-+0.070] | +0.153 [+0.061-+0.245] | +0.055 [-0.061-+0.168] |
+| overnight_1→overnight_2 | v2 | +0.397 [+0.275-+0.513] | +0.037 [-0.018-+0.088] | +0.190 [+0.052-+0.321] | +0.045 [-0.119-+0.215] |
+| fit_fine100→full_ho2_fine100 | fine100 | +0.466 [+0.389-+0.540] | +0.047 [+0.006-+0.090] | +0.227 [+0.136-+0.311] | +0.117 [-0.002-+0.230] |
+| fit_fine100→full_ho1_fine100 | fine100 | +0.462 [+0.337-+0.577] | +0.011 [-0.057-+0.079] | +0.281 [+0.142-+0.405] | +0.127 [-0.038-+0.299] |
+Reading: on the 0–100 scale the value model predicts the final outcome better than on −2..+2 (V1 +0.47 vs +0.42 on both held-out sets; V2 +0.23/+0.28 vs +0.15/+0.19), and on held-out 2 it now beats raw reception (V1−C1 lower bound > 0). Reporting only, as pre-stated; fit-set re-read cost $1.31.
+
+#### P8-A pilot result (19:33 KST, analysis/dist5.md, rel_p4_dist5.json) and go decision
+| condition (40 dialogues, n=3, 1.3-contributor) | distinct turn values | z ≥ +2 share | ICC(1) | split-half ρ | parse fail | $/dialogue | C1 [CI] (report only) | conv. ρ vs fine100 |
+|---|---|---|---|---|---|---|---|---|
+| fine100 (P2) | 102 | 0.030 | 0.352 | 0.687 | 0 | 0.0066 | +0.512 [+0.281, +0.689] | — |
+| dist5 (P4, structured) | 339 | 0.009 | 0.331 | **0.715** | 0 | 0.0080 (1.21×) | +0.513 [+0.282, +0.694] | +0.913 |
+Mean reported spread (sd of the judge's distribution) 17.8 points (range 14–21). Go rule: parse ≤ 5% ✓,
+reliability ≥ fine100 ✓ (0.715 vs 0.687), cost ≤ 1.5× ✓ → **full run on held-out 2 and held-out 1
+proceeds** (same settings; expected ≈ $3.5, within the $5 cap). Adoption still requires R1(dist5)
+lower bound > 0 on both sets and R1 point ≥ R1(fine100), as pre-stated.
