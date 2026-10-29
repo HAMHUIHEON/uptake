@@ -175,6 +175,53 @@ def fit_board_norm(effects_lists, method="quantile") -> dict:
     return {"mu": float(mu), "sd": float(sd), "n": n, "thresholds": thresholds}
 
 
+def residual_norm(fit_items, mu, table) -> dict:
+    """Population sd of the panel residual over fit effects with readings."""
+    from . import valuemodel as V
+
+    if isinstance(fit_items, dict):
+        records = [v for v in fit_items.values() if isinstance(v, dict)]
+    else:
+        records = [v for v in (fit_items or []) if isinstance(v, dict)]
+    try:
+        mu_f = float(mu)
+    except (TypeError, ValueError):
+        mu_f = 0.0
+    vals: list[float] = []
+    for item in records:
+        by_turn: dict[int, list] = {}
+        for m in (item.get("moves", []) or []):
+            if not isinstance(m, dict):
+                continue
+            idx = m.get("turn_index")
+            if not isinstance(idx, int) or idx in by_turn:
+                continue
+            moves = m.get("moves", []) or []
+            try:
+                moves = list(moves)
+            except TypeError:
+                moves = []
+            by_turn[idx] = moves
+        for pos, e in enumerate(item.get("effects", []) or []):
+            if not isinstance(e, dict):
+                continue
+            idx = e.get("index", pos)
+            idx = idx if isinstance(idx, int) else pos
+            r = V.turn_residual(e, idx, by_turn, mu_f, table)
+            if r is None:
+                continue
+            vals.append(float(r))
+    n = len(vals)
+    if n == 0:
+        return {"sd_resid": 1.0, "n": 0}
+    mean = sum(vals) / n
+    var = sum((v - mean) ** 2 for v in vals) / n
+    sd = math.sqrt(var) if var > 0 else 0.0
+    if sd == 0:
+        sd = 1.0
+    return {"sd_resid": float(sd), "n": int(n)}
+
+
 _SKIP_NAMES = {"report.json", "run.json", "calibration.json", "calibration.md", "report.md",
                "transfer.json", "outcome.json", "predict.json"}
 
