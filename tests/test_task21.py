@@ -93,9 +93,9 @@ def test_pick_turns_order_k_extra():
     assert [t["index"] for t in got] == [1, 2, 3]
     assert [t["mark"] for t in got] == ["!?", "!", "!?"]
     assert got[0]["label_ko"] == "특이수"
-    assert got[1]["label_ko"] == "묘수"
-    assert got[1]["label_en"] == "strong move"
-    assert got[0]["label_en"] == "unusual move"
+    assert got[1]["label_ko"] == "호수(좋은 수)"
+    assert got[1]["label_en"] == "good"
+    assert got[0]["label_en"] == "interesting"
     # k=1 picks top |z| (index 2) plus the first "!?" (index 1)
     got1 = CM.pick_turns(item, norm, markov, k=1)
     assert [t["index"] for t in got1] == [1, 2]
@@ -154,7 +154,7 @@ class _FakeClient:
 
 def _turn_ref():
     turn = {"index": 5, "speaker": "A", "moves": ["propose"],
-            "mark": "!", "label_ko": "묘수", "label_en": "strong move",
+            "mark": "!", "label_ko": "호수(좋은 수)", "label_en": "good",
             "curve_before": 0.0, "curve_after": 1.5}
     ref = {"id": "fisher_ury_interests", "author": "Roger Fisher; William Ury",
            "title": "Getting to Yes: Negotiating Agreement Without Giving In",

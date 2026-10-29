@@ -8,10 +8,10 @@ from pathlib import Path
 
 from .board import _value_of, actual_class
 
-LABEL_KO = {"!": "묘수", "?": "실수", "!?": "특이수",
-            "!!": "대묘수", "??": "대실수"}
-LABEL_EN = {"!": "strong move", "?": "mistake", "!?": "unusual move",
-            "!!": "brilliant move", "??": "blunder"}
+LABEL_KO = {"!": "호수(좋은 수)", "?": "실수", "!?": "특이수",
+            "!!": "묘수", "??": "악수"}
+LABEL_EN = {"!": "good", "?": "mistake", "!?": "interesting",
+            "!!": "brilliant", "??": "blunder"}
 
 _YEAR_RE = re.compile(r"\b\d{4}\b")
 _QUOTE_RES = (
@@ -21,6 +21,81 @@ _QUOTE_RES = (
     re.compile(r"『([^』]+)』"),
     re.compile(r"「([^」]+)」"),
 )
+
+
+def rel_mean_of(effect) -> float:
+    """Mean relationship reading (rel_norm scale) behind one effect.
+
+    Prefers the aggregated ``relationship`` mean, falls back to the mean of
+    the readings' ``rel_norm``, then to the plain effect value (synthetic
+    records that carry only ``value``).
+    """
+    if not isinstance(effect, dict):
+        return 0.0
+    rel = effect.get("relationship")
+    if isinstance(rel, (list, tuple)) and len(rel) >= 1:
+        try:
+            return float(rel[0])
+        except (TypeError, ValueError):
+            pass
+    readings = effect.get("readings")
+    if isinstance(readings, list) and readings:
+        vals: list[float] = []
+        for r in readings:
+            if isinstance(r, dict) and "rel_norm" in r:
+                try:
+                    vals.append(float(r["rel_norm"]))
+                except (TypeError, ValueError):
+                    pass
+        if vals:
+            return sum(vals) / len(vals)
+    try:
+        return float(_value_of(effect))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def standing_of(rel_norm) -> float:
+    """Side standing (잔고) on the 0–100 scale: 50 + 25·rel_norm."""
+    try:
+        return 50.0 + 25.0 * float(rel_norm)
+    except (TypeError, ValueError):
+        return 50.0
+
+
+def display_name_of(turn) -> str:
+    """Speaker label for a turn: display name when provided, else the label.
+
+    Never maps a side to 흑/백; the raw speaker label ("A", "B", ...) is used.
+    """
+    if not isinstance(turn, dict):
+        return ""
+    dn = turn.get("display_name")
+    if isinstance(dn, str) and dn.strip():
+        return dn.strip()
+    sp = turn.get("speaker", "")
+    return sp if isinstance(sp, str) else str(sp)
+
+
+def standing_pairs(item) -> list[tuple[float, float]]:
+    """Per-effect (before, after) standings in record order.
+
+    Each side starts at 50; a side's standing after one of its own turns is
+    50 + 25·rel_norm of that turn, carried forward until its next turn.
+    """
+    effects = item.get("effects", []) if isinstance(item, dict) else []
+    last: dict[str, float] = {}
+    out: list[tuple[float, float]] = []
+    for e in effects or []:
+        if not isinstance(e, dict):
+            continue
+        speaker = e.get("speaker", "")
+        speaker = speaker if isinstance(speaker, str) else str(speaker)
+        after = standing_of(rel_mean_of(e))
+        before = last.get(speaker, 50.0)
+        last[speaker] = after
+        out.append((float(before), float(after)))
+    return out
 
 
 def load_references(path=None) -> list[dict]:
@@ -185,6 +260,7 @@ def surprise(prev_class, cur_class, markov, threshold=0.05) -> bool:
 def pick_turns(item, norm, markov=None, k=3) -> list[dict]:
     tv = turn_values(item, norm)
     curves = side_curves(item, norm)
+    stands = standing_pairs(item)
     cands: list[dict] = []
     for pos, entry in enumerate(tv):
         cur_class = actual_class(list(entry.get("moves", []) or []))
@@ -210,6 +286,12 @@ def pick_turns(item, norm, markov=None, k=3) -> list[dict]:
             before, after = 0.0, 0.0
         rec["curve_before"] = float(before)
         rec["curve_after"] = float(after)
+        if pos < len(stands):
+            rec["standing_before"] = float(stands[pos][0])
+            rec["standing_after"] = float(stands[pos][1])
+        else:
+            rec["standing_before"] = 50.0
+            rec["standing_after"] = 50.0
         cands.append(rec)
     try:
         kk = int(k)
@@ -277,21 +359,32 @@ def choose_reference(turn, refs, used=()) -> dict:
     return refs[0]
 
 
+def _line_numbers(turn) -> tuple[float, float]:
+    """Standings quoted in a line; legacy curve fields as fallback."""
+    turn = turn if isinstance(turn, dict) else {}
+    if "standing_before" in turn or "standing_after" in turn:
+        raw_b, raw_a = turn.get("standing_before", 50.0), turn.get("standing_after", 50.0)
+    else:
+        raw_b, raw_a = turn.get("curve_before", 0.0), turn.get("curve_after", 0.0)
+    try:
+        before = float(raw_b)
+    except (TypeError, ValueError):
+        before = 50.0
+    try:
+        after = float(raw_a)
+    except (TypeError, ValueError):
+        after = 50.0
+    return before, after
+
+
 def template_line(turn, ref) -> dict:
     idx = turn.get("index", 0) if isinstance(turn, dict) else 0
-    speaker = turn.get("speaker", "") if isinstance(turn, dict) else ""
+    name = display_name_of(turn)
     label_ko = turn.get("label_ko", "") if isinstance(turn, dict) else ""
     label_en = turn.get("label_en", "") if isinstance(turn, dict) else ""
     mark = turn.get("mark", "") if isinstance(turn, dict) else ""
     moves = turn.get("moves", []) or [] if isinstance(turn, dict) else []
-    try:
-        before = float(turn.get("curve_before", 0.0))
-    except (TypeError, ValueError):
-        before = 0.0
-    try:
-        after = float(turn.get("curve_after", 0.0))
-    except (TypeError, ValueError):
-        after = 0.0
+    before, after = _line_numbers(turn)
     if moves:
         words = ", ".join(moves)
         words_ko = words
@@ -301,10 +394,10 @@ def template_line(turn, ref) -> dict:
         words_en = "a move"
     idea_ko = ref.get("idea_ko", "") if isinstance(ref, dict) else ""
     idea_en = ref.get("idea_en", "") if isinstance(ref, dict) else ""
-    ko = (f"{idx}수 {speaker} {label_ko}({mark}) — {words_ko} 뒤 형세 "
-          f"{before:+.1f}→{after:+.1f}. {idea_ko}")
-    en = (f"Turn {idx}, {speaker}: {label_en} ({mark}) — after {words_en}, "
-          f"position {before:+.1f}→{after:+.1f}. {idea_en}")
+    ko = (f"{idx}수 {name} {label_ko}({mark}) — {words_ko} 뒤 잔고 "
+          f"{before:.0f} → {after:.0f}. {idea_ko}")
+    en = (f"Turn {idx}, {name}: {label_en} ({mark}) — after {words_en}, "
+          f"standing {before:.0f} → {after:.0f}. {idea_en}")
     return {"ko": ko, "en": en, "source": "template"}
 
 
@@ -354,19 +447,12 @@ def llm_line(client, turn, ref, model, meta=None) -> dict:
         return t
 
     idx = turn.get("index", 0) if isinstance(turn, dict) else 0
-    speaker = turn.get("speaker", "") if isinstance(turn, dict) else ""
+    name = display_name_of(turn)
     mark = turn.get("mark", "") if isinstance(turn, dict) else ""
     label_ko = turn.get("label_ko", "") if isinstance(turn, dict) else ""
     label_en = turn.get("label_en", "") if isinstance(turn, dict) else ""
     moves = turn.get("moves", []) or [] if isinstance(turn, dict) else []
-    try:
-        before = float(turn.get("curve_before", 0.0))
-    except (TypeError, ValueError):
-        before = 0.0
-    try:
-        after = float(turn.get("curve_after", 0.0))
-    except (TypeError, ValueError):
-        after = 0.0
+    before, after = _line_numbers(turn)
     author = ref.get("author", "") if isinstance(ref, dict) else ""
     title = ref.get("title", "") if isinstance(ref, dict) else ""
     year = ref.get("year", "") if isinstance(ref, dict) else ""
@@ -378,12 +464,15 @@ def llm_line(client, turn, ref, model, meta=None) -> dict:
         "per language (Korean and English), each at most 120 characters, describing "
         "what the move did to the position and why, using ONLY the given reference "
         "idea. You may name the reference author in short form; no other names, "
-        "books, papers or years. "
+        "books, papers or years. When you mention the score, quote the standing "
+        "on the 0-100 scale (for example 잔고 53 → 45), never a cumulative value. "
+        "Never call a side black/white (흑/백); use the speaker label. "
         'Reply with JSON only: {"ko": "...", "en": "..."}.'
     )
     user = (
-        f"Turn {idx} by {speaker}: moves {move_txt}, mark {mark} "
-        f"({label_en}/{label_ko}), position {before:+.1f}->{after:+.1f}.\n"
+        f"Turn {idx} by {name}: moves {move_txt}, mark {mark} "
+        f"({label_en}/{label_ko}), standing {before:.0f} -> {after:.0f} "
+        f"on the 0-100 scale (each side starts at 50).\n"
         f"Reference: {author} ({year}), {title}. "
         f"Idea EN: {idea_en} Idea KO: {idea_ko}\n"
         "Write one line per language as JSON."

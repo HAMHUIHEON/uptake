@@ -81,8 +81,8 @@ def test_planted_turn_double_vs_single_mark():
     got2 = CM.pick_turns(item, resid_norm, None, k=3)
     assert [t["index"] for t in got2] == [1]
     assert [t["mark"] for t in got2] == ["!!"]
-    assert got2[0]["label_ko"] == "대묘수"
-    assert got2[0]["label_en"] == "brilliant move"
+    assert got2[0]["label_ko"] == "묘수"
+    assert got2[0]["label_en"] == "brilliant"
 
 
 def test_high_value_matching_table_gets_no_mark():
@@ -237,7 +237,7 @@ def test_viewer_renders_double_marks():
     assert com["norm"]["sd_resid"] == 1.0
     assert [(t["index"], t["mark"]) for t in com["turns"]] == \
         [(0, "!!"), (1, "??")]
-    assert com["turns"][1]["label_ko"] == "대실수"
+    assert com["turns"][1]["label_ko"] == "악수"
     assert com["turns"][1]["label_en"] == "blunder"
     view = build_view(item, com)
     assert [t["mark"] for t in view["turns"]] == ["!!", "??"]
