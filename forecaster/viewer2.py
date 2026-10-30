@@ -19,9 +19,11 @@ from .board import _value_of
 from .commentary import (
     LABEL_EN,
     LABEL_KO,
+    pairwise_mu_sd_for_moves,
     pairwise_standing,
     rel_mean_of,
     standing_of,
+    standing_round,
     turn_values,
 )
 
@@ -167,7 +169,7 @@ def resolve_audio_src(audio, out, copy_audio=True) -> str | None:
 
 def _r100(x) -> int:
     """Round a 0–100 standing for display (half up, like JS Math.round)."""
-    return int(math.floor(float(x) + 0.5))
+    return standing_round(x)
 
 
 def tide_y(m, mid=150.0, amp=40.0) -> float:
@@ -286,6 +288,7 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
         scale = "v2"
     pairwise_view = (scale == "pairwise")
     pw_mu = pw_sd = 0.0
+    pw_move_norm: dict = {}
     if pairwise_view:
         nd = norm if isinstance(norm, dict) else {}
         try:
@@ -309,6 +312,9 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
                 pw_mu = sum(raw_vals) / len(raw_vals)
                 var = sum((v - pw_mu) ** 2 for v in raw_vals) / len(raw_vals)
                 pw_sd = var ** 0.5 if var > 0 else 0.0
+            pw_move_norm = {}
+        else:
+            pw_move_norm = nd
     eff_by_index: dict[int, dict] = {}
     for pos, e in enumerate(item.get("effects", []) or []):
         if not isinstance(e, dict):
@@ -346,7 +352,10 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
                 pw_raw = float(_value_of(eff))
             except (TypeError, ValueError):
                 pw_raw = 0.0
-            standing = pairwise_standing(pw_raw, pw_mu, pw_sd)
+            moves = e.get("moves", []) if isinstance(e, dict) else []
+            mu_t, sd_t = pairwise_mu_sd_for_moves(
+                moves or [], pw_move_norm, pw_mu, pw_sd)
+            standing = pairwise_standing(pw_raw, mu_t, sd_t)
         else:
             pw_raw = None
             standing = standing_of(rel_mean_of(eff))
@@ -399,10 +408,12 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
     else:
         x_sp, y_sp, xs, ys = "", "", [], []
     if len(speakers) >= 2:
-        settlement = (f"{x_sp} 잔고 50 → {_r100(xs[-1])} · "
-                      f"{y_sp} 잔고 50 → {_r100(ys[-1])}" if xs else "")
+        settlement = (f"{x_sp} 잔고 50 → {standing_round(xs[-1])} · "
+                      f"{y_sp} 잔고 50 → {standing_round(ys[-1])}"
+                      if xs else "")
     elif len(speakers) == 1:
-        settlement = f"{x_sp} 잔고 50 → {_r100(xs[-1])}" if xs else ""
+        settlement = (f"{x_sp} 잔고 50 → {standing_round(xs[-1])}"
+                      if xs else "")
     else:
         settlement = ""
     item_id = item.get("id", "")

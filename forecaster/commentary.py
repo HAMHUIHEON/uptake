@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from pathlib import Path
 
@@ -63,19 +64,145 @@ def standing_of(rel_norm) -> float:
         return 50.0
 
 
-STANDING_SCALE_PAIRWISE = "pairwise→0-100 via z"
+STANDING_SCALE_PAIRWISE = "pairwise→0-100 via logistic(z)"
+
+
+def sigmoid(z) -> float:
+    """Logistic sigmoid 1/(1+e^-z)."""
+    try:
+        zf = float(z)
+    except (TypeError, ValueError):
+        return 0.5
+    if not math.isfinite(zf):
+        return 0.5
+    if zf >= 0:
+        return 1.0 / (1.0 + math.exp(-zf))
+    e = math.exp(zf)
+    return e / (1.0 + e)
+
+
+def logistic_standing(z) -> int:
+    """0–100 standing from a z-score: round(100·sigmoid(z))."""
+    try:
+        zf = float(z)
+    except (TypeError, ValueError):
+        return 50
+    if not math.isfinite(zf):
+        return 50
+    return int(math.floor(100.0 * sigmoid(zf) + 0.5))
+
+
+def standing_from_z(z) -> int:
+    """Alias for logistic_standing (z → rounded 0–100 standing)."""
+    return logistic_standing(z)
+
+
+def standing_round(x) -> int:
+    """Round a 0–100 standing for display (half up, like JS Math.round)."""
+    try:
+        return int(math.floor(float(x) + 0.5))
+    except (TypeError, ValueError):
+        return 50
 
 
 def pairwise_standing(value, mu, sd) -> float:
-    """Side standing for a BT rating: 50 + 25·(value − mu)/sd, clipped 0–100."""
+    """Side standing for a BT rating: round(100·sigmoid((value-mu)/sd))."""
     try:
-        z = (float(value) - float(mu)) / float(sd)
-    except (TypeError, ValueError, ZeroDivisionError):
-        return 50.0
-    try:
-        return max(0.0, min(100.0, 50.0 + 25.0 * float(z)))
+        mu_f = float(mu)
+        sd_f = float(sd)
+        v_f = float(value)
     except (TypeError, ValueError):
         return 50.0
+    if not math.isfinite(v_f) or not math.isfinite(mu_f):
+        return 50.0
+    if not math.isfinite(sd_f) or sd_f == 0.0:
+        return 50.0
+    try:
+        z = (v_f - mu_f) / sd_f
+    except ZeroDivisionError:
+        return 50.0
+    if not math.isfinite(z):
+        return 50.0
+    try:
+        return float(logistic_standing(z))
+    except (TypeError, ValueError):
+        return 50.0
+
+
+def pairwise_mu_sd_for_moves(moves, norm, fallback_mu=0.0,
+                             fallback_sd=0.0) -> tuple[float, float]:
+    """Global or per-move mu/sd for one pairwise turn.
+
+    When the fit table carries per-move means/sds (``norm["move_stats"]``
+    or dict-valued ``norm["table"]`` entries with an ``sd``), average the
+    entries for this turn's moves; otherwise return the global fallback.
+    ``move_stats`` means are centered (value − global mu), so the absolute
+    mu adds the global fallback back; entries with an absolute ``mu`` key
+    are used as-is.
+    """
+    try:
+        mu_g = float(fallback_mu)
+    except (TypeError, ValueError):
+        mu_g = 0.0
+    try:
+        sd_g = float(fallback_sd)
+    except (TypeError, ValueError):
+        sd_g = 0.0
+    if not math.isfinite(mu_g):
+        mu_g = 0.0
+    if not math.isfinite(sd_g):
+        sd_g = 0.0
+    if not moves or not isinstance(norm, dict):
+        return (float(mu_g), float(sd_g))
+    try:
+        seq = list(moves)
+    except TypeError:
+        return (float(mu_g), float(sd_g))
+    seen: set = set()
+    uniq: list[str] = []
+    for mv in seq:
+        if not isinstance(mv, str) or mv in seen:
+            continue
+        seen.add(mv)
+        uniq.append(mv)
+    if not uniq:
+        return (float(mu_g), float(sd_g))
+    raw_stats = norm.get("move_stats")
+    stats = raw_stats if isinstance(raw_stats, dict) else {}
+    raw_table = norm.get("table")
+    table = raw_table if isinstance(raw_table, dict) else {}
+    mus: list[float] = []
+    sds: list[float] = []
+    for mv in uniq:
+        entry = stats.get(mv)
+        if not isinstance(entry, dict):
+            tval = table.get(mv)
+            entry = tval if isinstance(tval, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        if "mu" in entry:
+            try:
+                mu_i = float(entry.get("mu"))
+            except (TypeError, ValueError):
+                continue
+        elif "mean" in entry:
+            try:
+                mu_i = mu_g + float(entry.get("mean"))
+            except (TypeError, ValueError):
+                continue
+        else:
+            continue
+        try:
+            sd_i = float(entry.get("sd"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(mu_i) or not math.isfinite(sd_i) or sd_i <= 0:
+            continue
+        mus.append(float(mu_i))
+        sds.append(float(sd_i))
+    if not mus or not sds:
+        return (float(mu_g), float(sd_g))
+    return (float(sum(mus) / len(mus)), float(sum(sds) / len(sds)))
 
 
 def _avg_ranks(vals) -> list[float]:
@@ -134,12 +261,14 @@ def standing_pairs(item, norm=None) -> list[tuple[float, float]]:
     Each side starts at 50; a side's standing after one of its own turns is
     50 + 25·rel_norm of that turn, carried forward until its next turn.
     Pairwise records carry BT ratings instead of readings, so their standing
-    is 50 + 25·(value − mu)/sd clipped to 0–100, with mu/sd from the fit
-    norm (or the record itself when no norm is given).
+    is round(100·sigmoid((value − mu)/sd)), with mu/sd from the fit norm
+    (per-move when the table carries them, else global) or the record
+    itself when no norm is given.
     """
     effects = item.get("effects", []) if isinstance(item, dict) else []
     pairwise_item = isinstance(item, dict) and item.get("scale") == "pairwise"
     mu = sd = None
+    by_index: dict[int, list] = {}
     if pairwise_item:
         if isinstance(norm, dict) and "mu" in norm and "sd" in norm:
             try:
@@ -152,9 +281,10 @@ def standing_pairs(item, norm=None) -> list[tuple[float, float]]:
                 sd = 0.0
         else:
             mu, sd = _record_value_stats(item)
+        by_index = _moves_by_index(item)
     last: dict[str, float] = {}
     out: list[tuple[float, float]] = []
-    for e in effects or []:
+    for pos, e in enumerate(effects or []):
         if not isinstance(e, dict):
             continue
         speaker = e.get("speaker", "")
@@ -164,7 +294,12 @@ def standing_pairs(item, norm=None) -> list[tuple[float, float]]:
                 raw = float(_value_of(e))
             except (TypeError, ValueError):
                 raw = 0.0
-            after = pairwise_standing(raw, mu, sd)
+            idx = e.get("index", pos)
+            idx = idx if isinstance(idx, int) else pos
+            moves = by_index.get(idx, [])
+            mu_t, sd_t = pairwise_mu_sd_for_moves(
+                moves, norm if isinstance(norm, dict) else {}, mu, sd)
+            after = pairwise_standing(raw, mu_t, sd_t)
         else:
             after = standing_of(rel_mean_of(e))
         before = last.get(speaker, 50.0)
@@ -429,6 +564,7 @@ def _effective_norm(item, norm):
     eff = dict(norm)
     eff["mu"] = float(mu_r)
     eff["sd"] = float(sd_r)
+    eff.pop("move_stats", None)
     return eff
 
 
@@ -587,10 +723,11 @@ def template_line(turn, ref) -> dict:
         words_en = "a move"
     idea_ko = ref.get("idea_ko", "") if isinstance(ref, dict) else ""
     idea_en = ref.get("idea_en", "") if isinstance(ref, dict) else ""
+    rb, ra = standing_round(before), standing_round(after)
     ko = (f"{idx}수 {name} {label_ko}({mark}) — {words_ko} 뒤 잔고 "
-          f"{before:.0f} → {after:.0f}. {idea_ko}")
+          f"{rb} → {ra}. {idea_ko}")
     en = (f"Turn {idx}, {name}: {label_en} ({mark}) — after {words_en}, "
-          f"standing {before:.0f} → {after:.0f}. {idea_en}")
+          f"standing {rb} → {ra}. {idea_en}")
     return {"ko": ko, "en": en, "source": "template"}
 
 
@@ -664,7 +801,8 @@ def llm_line(client, turn, ref, model, meta=None) -> dict:
     )
     user = (
         f"Turn {idx} by {name}: moves {move_txt}, mark {mark} "
-        f"({label_en}/{label_ko}), standing {before:.0f} -> {after:.0f} "
+        f"({label_en}/{label_ko}), standing "
+        f"{standing_round(before)} -> {standing_round(after)} "
         f"on the 0-100 scale (each side starts at 50).\n"
         f"Reference: {author} ({year}), {title}. "
         f"Idea EN: {idea_en} Idea KO: {idea_ko}\n"
@@ -756,6 +894,8 @@ def comment(item, norm, markov=None, k=3, client=None,
         norm_out["table"] = norm["table"]
     if isinstance(norm, dict) and "sd_resid" in norm:
         norm_out["sd_resid"] = norm["sd_resid"]
+    if isinstance(norm, dict) and isinstance(norm.get("move_stats"), dict):
+        norm_out["move_stats"] = norm["move_stats"]
     if isinstance(norm, dict) and norm.get("rank_mode"):
         norm_out["rank_mode"] = True
     result: dict = {"id": item_id, "norm": norm_out,
@@ -793,16 +933,77 @@ def _load_fit_table(fit_dir) -> dict | None:
         sd_resid = 1.0
     raw_table = data.get("table", {})
     table: dict[str, float] = {}
+    move_stats: dict[str, dict] = {}
     if isinstance(raw_table, dict):
         for key, val in raw_table.items():
             if isinstance(val, dict):
-                val = val.get("mean", 0.0)
+                mean_val = val.get("mean", val.get("mu", 0.0))
+                try:
+                    table[str(key)] = float(mean_val)
+                except (TypeError, ValueError):
+                    table[str(key)] = 0.0
+                if "sd" in val:
+                    try:
+                        sd_v = float(val.get("sd"))
+                    except (TypeError, ValueError):
+                        sd_v = None
+                    if sd_v is not None and math.isfinite(sd_v) and sd_v > 0:
+                        entry: dict = {"sd": float(sd_v)}
+                        if "mu" in val:
+                            try:
+                                entry["mu"] = float(val.get("mu"))
+                            except (TypeError, ValueError):
+                                pass
+                            else:
+                                move_stats[str(key)] = entry
+                                continue
+                        try:
+                            entry["mean"] = float(mean_val)
+                        except (TypeError, ValueError):
+                            entry["mean"] = 0.0
+                        move_stats[str(key)] = entry
+            else:
+                try:
+                    table[str(key)] = float(val)
+                except (TypeError, ValueError):
+                    table[str(key)] = 0.0
+    raw_stats = data.get("move_stats")
+    if isinstance(raw_stats, dict):
+        for key, val in raw_stats.items():
+            if not isinstance(val, dict):
+                continue
+            entry2: dict = {}
+            if "mu" in val:
+                try:
+                    entry2["mu"] = float(val.get("mu"))
+                except (TypeError, ValueError):
+                    continue
+            elif "mean" in val:
+                try:
+                    entry2["mean"] = float(val.get("mean"))
+                except (TypeError, ValueError):
+                    continue
+            else:
+                continue
+            if "sd" not in val:
+                continue
             try:
-                table[str(key)] = float(val)
+                sd2 = float(val.get("sd"))
             except (TypeError, ValueError):
-                table[str(key)] = 0.0
-    return {"mu": mu, "sd": sd, "scale": data.get("scale", "v2"),
-            "table": table, "sd_resid": sd_resid}
+                continue
+            if not math.isfinite(sd2) or sd2 <= 0:
+                continue
+            entry2["sd"] = float(sd2)
+            try:
+                entry2["n"] = int(val.get("n", 0))
+            except (TypeError, ValueError):
+                pass
+            move_stats[str(key)] = entry2
+    out_norm: dict = {"mu": mu, "sd": sd, "scale": data.get("scale", "v2"),
+                      "table": table, "sd_resid": sd_resid}
+    if move_stats:
+        out_norm["move_stats"] = move_stats
+    return out_norm
 
 
 def main(argv=None) -> None:
@@ -857,6 +1058,14 @@ def main(argv=None) -> None:
         resid = C.residual_norm(sel, mu_fit, table)
         norm["table"] = {str(k): float(v) for k, v in table.items()}
         norm["sd_resid"] = float(resid["sd_resid"])
+        try:
+            from .valuemodel import move_kind_stats
+            mstats = move_kind_stats(sel, mu_fit)
+        except Exception:
+            mstats = {}
+        if isinstance(mstats, dict) and mstats:
+            norm["move_stats"] = {str(k): v for k, v in mstats.items()
+                                  if isinstance(v, dict)}
     if item_scale != fit_scale:
         crosses_pairwise = (item_scale == "pairwise") != (fit_scale == "pairwise")
         if crosses_pairwise and args.same_scale:

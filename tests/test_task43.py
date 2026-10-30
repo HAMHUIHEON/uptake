@@ -54,7 +54,7 @@ def test_commentary_pairwise_table_dir(tmp_path):
     result = json.loads(out_p.read_text(encoding="utf-8"))
     assert result["norm"]["scale"] == "pairwise"
     assert "scale_note" not in result
-    assert result["standing_scale"] == "pairwise→0-100 via z"
+    assert result["standing_scale"] == "pairwise→0-100 via logistic(z)"
     by_index = {t["index"]: t for t in result["turns"]}
     assert set(by_index) == {0, 1}
     assert by_index[0]["resid"] == pytest.approx(0.8)
@@ -68,7 +68,7 @@ def test_commentary_pairwise_table_dir(tmp_path):
         assert 0.0 <= t["standing_before"] <= 100.0
         assert 0.0 <= t["standing_after"] <= 100.0
         assert "잔고" in t["line_ko"]
-    assert by_index[0]["standing_after"] == pytest.approx(50 + 25 * 1.5)
+    assert by_index[0]["standing_after"] == pytest.approx(82.0)
 
 
 def test_commentary_pairwise_records_fit(tmp_path):
@@ -93,12 +93,12 @@ def test_commentary_pairwise_records_fit(tmp_path):
     assert result["norm"]["mu"] == pytest.approx(0.1)
     assert result["norm"]["sd"] == pytest.approx(0.432, abs=0.01)
     assert "scale_note" not in result
-    assert result["standing_scale"] == "pairwise→0-100 via z"
+    assert result["standing_scale"] == "pairwise→0-100 via logistic(z)"
 
 
 def test_pairwise_standing_clip():
     assert CM.pairwise_standing(0.0, 0.0, 0.6) == pytest.approx(50.0)
-    assert CM.pairwise_standing(0.6, 0.0, 0.6) == pytest.approx(75.0)
+    assert CM.pairwise_standing(0.6, 0.0, 0.6) == pytest.approx(73.0)
     assert CM.pairwise_standing(5.0, 0.0, 0.6) == pytest.approx(100.0)
     assert CM.pairwise_standing(-5.0, 0.0, 0.6) == pytest.approx(0.0)
     assert CM.pairwise_standing(0.6, 0.0, 0.0) == pytest.approx(50.0)
@@ -162,7 +162,7 @@ def test_commentary_same_scale_rank_path(tmp_path):
              "--out", str(out_p)])
     result = json.loads(out_p.read_text(encoding="utf-8"))
     assert "rank" in result["scale_note"]
-    assert result["standing_scale"] == "pairwise→0-100 via z"
+    assert result["standing_scale"] == "pairwise→0-100 via logistic(z)"
     tv = {e["index"]: e for e in CM.turn_values(item, result["norm"])}
     assert tv[0]["resid"] == pytest.approx(2 / 3)
     assert tv[0]["z_resid"] == pytest.approx(1.4142, abs=1e-3)
@@ -281,8 +281,8 @@ def test_viewer2_pairwise_badge_and_hover():
     assert view["momentum"] == pytest.approx([1.2, 1.86])
     # side standings use the 0–100 conversion of the BT rating
     assert view["standings"] == [
-        {"A": pytest.approx(75.0), "B": pytest.approx(50.0)},
-        {"A": pytest.approx(75.0), "B": pytest.approx(25.0)},
+        {"A": pytest.approx(73.0), "B": pytest.approx(50.0)},
+        {"A": pytest.approx(73.0), "B": pytest.approx(27.0)},
     ]
     assert view["turns"][0]["rating"] == pytest.approx(0.6)
     assert view["turns"][0]["rating_label"] == "쌍대 평점"
