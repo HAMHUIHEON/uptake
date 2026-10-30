@@ -15,9 +15,11 @@ import math
 import os
 from pathlib import Path
 
+from .board import _value_of
 from .commentary import (
     LABEL_EN,
     LABEL_KO,
+    pairwise_standing,
     rel_mean_of,
     standing_of,
     turn_values,
@@ -280,8 +282,33 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
     speakers = speakers_of(tv)
     mode = "bands" if len(speakers) >= 3 else "tide"
     scale = item.get("scale", "v2")
-    if scale not in ("v2", "fine100", "seven", "dist5"):
+    if scale not in ("v2", "fine100", "seven", "dist5", "pairwise"):
         scale = "v2"
+    pairwise_view = (scale == "pairwise")
+    pw_mu = pw_sd = 0.0
+    if pairwise_view:
+        nd = norm if isinstance(norm, dict) else {}
+        try:
+            pw_mu = float(nd.get("mu", 0.0))
+        except (TypeError, ValueError):
+            pw_mu = 0.0
+        try:
+            pw_sd = float(nd.get("sd", 0.0))
+        except (TypeError, ValueError):
+            pw_sd = 0.0
+        if nd.get("scale") != "pairwise" or not pw_sd:
+            raw_vals: list[float] = []
+            for e in (item.get("effects", []) or []):
+                if not isinstance(e, dict):
+                    continue
+                try:
+                    raw_vals.append(float(_value_of(e)))
+                except (TypeError, ValueError):
+                    continue
+            if raw_vals:
+                pw_mu = sum(raw_vals) / len(raw_vals)
+                var = sum((v - pw_mu) ** 2 for v in raw_vals) / len(raw_vals)
+                pw_sd = var ** 0.5 if var > 0 else 0.0
     eff_by_index: dict[int, dict] = {}
     for pos, e in enumerate(item.get("effects", []) or []):
         if not isinstance(e, dict):
@@ -314,7 +341,15 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
     for pos, e in enumerate(tv):
         idx = e.get("index", pos)
         eff = eff_by_index.get(idx, {})
-        standing = standing_of(rel_mean_of(eff))
+        if pairwise_view:
+            try:
+                pw_raw = float(_value_of(eff))
+            except (TypeError, ValueError):
+                pw_raw = 0.0
+            standing = pairwise_standing(pw_raw, pw_mu, pw_sd)
+        else:
+            pw_raw = None
+            standing = standing_of(rel_mean_of(eff))
         if e.get("speaker") in last:
             last[e["speaker"]] = standing
         trail.append({sp: float(last[sp]) for sp in speakers})
@@ -349,6 +384,9 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
             rec["resid"] = float(e["resid"])
         if e.get("z_resid") is not None:
             rec["z_resid"] = float(e["z_resid"])
+        if pairwise_view and pw_raw is not None:
+            rec["rating"] = float(pw_raw)
+            rec["rating_label"] = "쌍대 평점"
         turns_out.append(rec)
     if len(speakers) >= 2:
         x_sp, y_sp = speakers[0], speakers[1]
@@ -563,8 +601,12 @@ function smoothD(pts){
   return d;
 }
 function tipText(t){
-  var s="#"+t.index+" "+(t.display||t.speaker)+" · panel "+
-    Math.round(t.raw100);
+  var s="#"+t.index+" "+(t.display||t.speaker);
+  if(t.rating_label&&t.rating!==null&&t.rating!==undefined){
+    s+=" · "+t.rating_label+" "+Number(t.rating).toFixed(2);
+  }else{
+    s+=" · panel "+Math.round(t.raw100);
+  }
   if(t.spread!==null&&t.spread!==undefined){
     var tsrc=t.spread_src||data.spread_src;
     if(tsrc==="disagreement")s+=" · 확신도: 심사위원 의견 불일치 "+
@@ -1251,6 +1293,7 @@ _SCALE_LABELS = {
     "seven": "panel −3..+3",
     "v2": "panel −2..+2",
     "dist5": "panel distribution 0–100",
+    "pairwise": "읽기 척도: 쌍대 비교(BT 평점)",
 }
 
 

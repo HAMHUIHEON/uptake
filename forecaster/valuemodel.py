@@ -718,7 +718,130 @@ def _compare_md_lines(args, edir, results, mu, sd, fit_scale,
     return lines
 
 
+def move_kind_stats(fit_items, mu) -> dict[str, dict]:
+    """Mean/sd/n of centered values per move kind (same pooling as the table)."""
+    mu = float(mu)
+    acc: dict[str, list[float]] = {}
+    for _, item in _pairs(fit_items):
+        if not isinstance(item, dict):
+            continue
+        by_turn: dict[int, list] = {}
+        for m in _moves_of(item):
+            idx = m.get("turn_index")
+            if not isinstance(idx, int) or idx in by_turn:
+                continue
+            moves = m.get("moves", []) or []
+            if not isinstance(moves, list):
+                try:
+                    moves = list(moves)
+                except TypeError:
+                    moves = []
+            by_turn[idx] = moves
+        if not by_turn:
+            continue
+        for pos, e in enumerate(_effects_of(item)):
+            idx = _effect_index(e, pos)
+            if idx not in by_turn:
+                continue
+            moves = by_turn[idx]
+            if not moves:
+                continue
+            try:
+                centered = float(B._value_of(e) - mu)
+            except (TypeError, ValueError):
+                continue
+            seen: set = set()
+            for mv in moves:
+                if not isinstance(mv, str) or mv in seen:
+                    continue
+                seen.add(mv)
+                acc.setdefault(mv, []).append(centered)
+    out: dict[str, dict] = {}
+    for mv in sorted(acc):
+        vals = acc[mv]
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        out[mv] = {"mean": float(mean),
+                   "sd": float(var ** 0.5) if var > 0 else 0.0,
+                   "n": int(len(vals))}
+    return out
+
+
+def write_fit_table(out_dir, fit_items, outcomes=None, lam=1.0,
+                    featureset="resid", scale="pairwise") -> dict:
+    """Fit mu/sd, the move table and the value model; write table.json."""
+    fs = _check_featureset(featureset)
+    if isinstance(fit_items, dict):
+        items = [v for v in fit_items.values() if isinstance(v, dict)]
+    else:
+        items = [v for v in (fit_items or []) if isinstance(v, dict)]
+    sel = [d for d in items if d.get("genre") == "negotiation"]
+    norm = C.fit_board_norm([d.get("effects", []) or [] for d in sel],
+                            method="z")
+    mu = float(norm.get("mu", 0.0))
+    sd = float(norm.get("sd", 0.0))
+    table = O.move_value_table(sel, mu)
+    stats = move_kind_stats(sel, mu)
+    resid = C.residual_norm(sel, mu, table)
+    model = fit_value({d.get("id", f"fit-{i}"): d
+                       for i, d in enumerate(sel)},
+                      outcomes, mu, table, lam=float(lam), featureset=fs)
+    payload = {
+        "scale": scale,
+        "mu": float(mu),
+        "sd": float(sd),
+        "n": int(norm.get("n", 0)),
+        "table": {str(k): float(v) for k, v in table.items()},
+        "move_stats": stats,
+        "sd_resid": float(resid["sd_resid"]),
+        "model": model,
+    }
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "table.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+def fit_main(argv=None) -> None:
+    ap = argparse.ArgumentParser(prog="uptake-value fit")
+    ap.add_argument("--src", required=True,
+                    help="records directory (pairwise records)")
+    ap.add_argument("--out", required=True,
+                    help="output directory for table.json")
+    ap.add_argument("--scale", default="pairwise", choices=["pairwise"])
+    ap.add_argument("--casino", default=None,
+                    help="casino outcomes for the value-model coefficients")
+    ap.add_argument("--lam", type=float, default=1.0)
+    ap.add_argument("--features", choices=["legacy", "resid"], default="resid")
+    args = ap.parse_args(argv)
+
+    items = C._load_items(Path(args.src))
+    if not items:
+        raise SystemExit(f"no usable records in {args.src}")
+    scales = sorted({(d.get("scale", "v2") if isinstance(d, dict) else "v2")
+                     for d in items.values()})
+    if len(scales) > 1:
+        raise SystemExit("scale mismatch: src has mixed scales "
+                         + ",".join(str(s) for s in scales))
+    if scales[0] != args.scale:
+        raise SystemExit(f"scale mismatch: src={scales[0]} "
+                         f"expected {args.scale}")
+    outcomes = O.load_outcomes(args.casino) if args.casino else None
+    payload = write_fit_table(args.out, items, outcomes, lam=float(args.lam),
+                              featureset=args.features, scale=args.scale)
+    print(f"done scale={payload['scale']} mu={payload['mu']:+.3f} "
+          f"sd={payload['sd']:.3f} n={payload['n']} "
+          f"moves={len(payload['table'])} table={args.out}/table.json")
+
+
 def main(argv=None) -> None:
+    import sys
+
+    argv_list = list(argv) if argv is not None else sys.argv[1:]
+    if argv_list and argv_list[0] == "fit":
+        fit_main(argv_list[1:])
+        return
     ap = argparse.ArgumentParser(prog="uptake-value")
     ap.add_argument("--fit", required=True)
     ap.add_argument("--eval", nargs="+", required=True)

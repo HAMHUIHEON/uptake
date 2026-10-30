@@ -505,6 +505,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--k", type=int, default=1)
     ap.add_argument("--scale", default="fine100",
                     choices=["v2", "fine100", "seven"])
+    ap.add_argument("--reader", default="dist5", choices=["dist5", "pairwise"],
+                    help="reading mode; pairwise is a separate "
+                         "uptake-pairwise run, not a batch mode")
     ap.add_argument("--effort", default="low")
     ap.add_argument("--repeat-sample", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
@@ -536,6 +539,11 @@ def batch_main(argv=None) -> None:
 
     ap = build_arg_parser()
     args = ap.parse_args(argv)
+    if args.reader == "pairwise":
+        ap.error("--reader pairwise is not an uptake-batch mode: run the "
+                 "pairwise reader separately with `uptake-pairwise run "
+                 "--src DIR --out DIR` (then `uptake-pairwise fit`); "
+                 "uptake-batch keeps reading with --scale")
 
     print(f"public_model={args.public_model} private_model={args.private_model}")
     items = _load_manifest(args.manifest)
@@ -548,6 +556,7 @@ def batch_main(argv=None) -> None:
         "argv": list(sys.argv),
         "settings": {
             "n": args.n, "k": args.k, "scale": args.scale,
+            "reader": args.reader,
             "effort": args.effort,
             "workers": args.workers, "inner_workers": args.inner_workers,
             "budget": args.budget, "seed": args.seed, "b": args.b,
