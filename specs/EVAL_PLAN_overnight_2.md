@@ -344,3 +344,46 @@ parse 0; position bias 0.510). Before pairwise replaces dist5 in the pipeline, r
 - Rule: confirmation holds if R1(pairwise) lower bound > 0 AND point ≥ R1(dist5) point on held-out 1. If it holds, pairwise is
   the default reader for both held-out sets and the demo pages are regenerated on it (task43). If it fails, held-out 2 result
   stands as "most valid on one set", dist5 remains the default, and no further pairwise spend without a new amendment.
+
+## Amendment 11 (2026-10-30 20:30 KST, written before any call) — perturbation test of reader sensitivity (no human raters)
+Question: does the reader move in the predicted direction when one turn is edited, holding everything else fixed?
+- Material: 20 held-out 2 dialogues (ids = first 20 of ids_ho2.txt in file order), one target turn each = the median-|z|
+  turn of the dialogue on the pairwise scale (an ordinary turn, not already marked). Two edited variants of the target turn
+  written by muse-spark-1.3 from a fixed prompt: RUDE (same content, face-threatening wording: blunt refusal, blame,
+  no softening) and POLITE (same content, redressed: acknowledgement, hedge, thanks). Context turns unchanged.
+- Reading: pairwise reader as in Amendments 9/10 (k ignored — pairs are fixed): for each target, the three pairs
+  (orig, rude), (orig, polite), (rude, polite), both orders, three stances = 18 votes per target, 360 calls, cap $0.5.
+- Metrics: (1) ordering accuracy = share of targets with polite > orig > rude on majority votes; (2) mean vote margin per
+  pair; (3) position bias on these pairs. Pre-stated: the reader is "directionally sensitive" if (1) ≥ 0.80 and each pair's
+  majority goes the predicted way in ≥ 16/20. Below 0.60 → report as insensitive at single-turn edits.
+- Not a validity test of the scale (that is Amendments 9/10); this is a sensitivity check that needs no human raters.
+  Variants and votes are saved under data/private/scale6/perturb/ and never enter any held-out set.
+
+#### P11-A perturbation result (10/30 20:35 KST, scale6/perturb/, analysis/perturb_1030.md) — decision
+| metric | value | rule |
+|---|---|---|
+| targets / presentations / votes | 20 / 120 / 360 (parse failures 0) | — |
+| ordering accuracy (polite > orig > rude, majority votes) | **0.80 (16/20)** | ≥ 0.80 ✓ (at the threshold) |
+| orig vs rude predicted | 19/20 | ≥ 16 ✓ |
+| orig vs polite predicted | 17/20 | ≥ 16 ✓ |
+| rude vs polite predicted | 20/20 | ≥ 16 ✓ |
+| mean margin / position bias | +0.808 / 0.515 | reported |
+| spend | $0.147 (variants $0.102 + votes $0.045) | cap $0.5 ✓ |
+Verdict per the pre-stated rule: **directionally sensitive** at single-turn edits. The weaker pair is orig vs polite
+(17/20): three polite rewrites were read as no better than the original (two ties, one reversed), consistent with the
+reader discounting added politeness formulas when the proposition is unchanged. No human raters involved.
+
+## Amendment 12 (2026-10-30 20:40 KST, written before any call; to run 10/31 morning) — famous misreadings as the grader
+Question: given only the situation *before* the outcome and the utterance, does the reader predict how the original
+recipient actually took it? Material: the owner's scene corpus (코퍼스_v1.jsonl), the 30 scenes whose `입력.상황` is
+drafted (문학 14 · 역사 10 · 고전 6; 오해발생 24 / 대조 6), each with a masked version (`상황_가림`, `발화_가림`: names,
+works, places replaced by roles). Ground truth: `해석` (the recipient's actual reading) and `근거` (textual evidence).
+- Reader prompt (same model/stances as the pairwise reader, structured output): inputs 상황, 발화, 관계·권력거리·채널;
+  outputs (a) 받아들임 ∈ {잘, 보통, 나쁘게}, (b) one-line predicted reading of the utterance by the recipient. Run on the
+  real version and the masked version, 3 stances each: 30 × 2 × 3 = 180 calls, cap $0.5.
+- Judge (separate call, model 1.3-contributor, sees 해석 + 근거 + the prediction, never the reader's reasoning): does the
+  predicted reading match the actual reading? {match, partial, miss}. 90 judge calls per version.
+- Metrics, pre-stated: M1 = share of scenes (majority of stances) judged match or partial, real version; M2 = same for
+  masked; M3 = M1 − M2 (memorization gap). Verdict: "reads famous scenes" if M1 ≥ 0.60 and M3 ≤ 0.15; if M1 ≥ 0.60 but
+  M3 > 0.15 report as "partly from memory"; M1 < 0.45 → report as not supported. Small n: report Wilson 95% intervals.
+- Scenes, predictions and judgments are saved under data/private/scale6/scenes30/. The 56-scene 평가셋 is NOT touched.
