@@ -278,3 +278,69 @@ Mean reported spread (sd of the judge's distribution) 17.8 points (range 14–21
 reliability ≥ fine100 ✓ (0.715 vs 0.687), cost ≤ 1.5× ✓ → **full run on held-out 2 and held-out 1
 proceeds** (same settings; expected ≈ $3.5, within the $5 cap). Adoption still requires R1(dist5)
 lower bound > 0 on both sets and R1 point ≥ R1(fine100), as pre-stated.
+
+#### P8-A full-run result (22:31 KST, analysis/residual_dist5_ho2.md, residual_dist5_ho1.md, rel_full_*.json) — decision
+| set | R1(dist5) [CI] | R1(fine100) | dC1 (dist5−fine100) [CI] | C6diff(dist5) [CI] | split-half dist5 / fine100 | $/dialogue dist5 |
+|---|---|---|---|---|---|---|
+| held-out 2 (300) | **+0.268 [+0.187, +0.340]** | +0.257 | +0.005 [−0.019, +0.028] | +0.060 [−0.003, +0.125] | 0.723 / 0.699 | 0.0079 |
+| held-out 1 (134) | **+0.299 [+0.175, +0.418]** | +0.293 | +0.005 [−0.035, +0.049] | +0.090 [+0.002, +0.182] | 0.699 / 0.689 | 0.0079 |
+Pre-stated adoption rule: R1(dist5) lower bound > 0 on both sets ✓ and R1(dist5) point ≥ R1(fine100) on both ✓
+→ **dist5 (distribution reading via structured output) becomes the default board scale.** Honest reading: the
+gain over fine100 in outcome validity is within noise (ΔR1 ≈ +0.01, dC1 CI includes 0); what dist5 adds is
+resolution (339 vs 102 turn values on the pilot), slightly higher reliability on both sets, zero parse
+failures, and a per-reading spread usable as confidence — at 1.2× cost. Spend P8-A: $0.32 + $2.38 + $1.06 =
+$3.76 of the $5 cap. Follow-ups (owner decision, not run tonight): re-read the fit set on dist5 for
+commentary/value-model norms (≈$1.6, would exceed the P8-A cap by ≈$0.4 → needs a cap raise), make dist5
+the batch default (small Muse task), regenerate demo pages with confidence bands.
+
+#### P7-A pairwise pilot result (10/30 00:05 KST, pairwise_pilot/run.json, pairwise_fit/reliability.json, analysis/residual_pairwise.md) — decision
+| metric | pairwise (40 dialogues, k=4, 3 stances) | fine100 (same 40) | rule |
+|---|---|---|---|
+| pairs / votes | 1,867 / 5,601 (ties 8) | — | — |
+| parse failures | 0 | 0 | ≤ 5% ✓ |
+| position bias (share "first" wins) | 0.504 | — | ≈ 0.5 ✓ (reported) |
+| split-half reliability ρ | **0.763** (462 turns) | 0.687 | ≥ fine100 ✓ |
+| $/dialogue | **0.0239** | 0.0066 | ≤ 2× (0.0132) **✗ (3.6×)** |
+| R1 (n = 40, report only) | +0.206 [−0.034, +0.431] | +0.274 [+0.040, +0.482] | reported only |
+| dC1 pairwise − fine100 | −0.068 [−0.171, +0.034] | — | reported only |
+Pre-stated go rule needs all three of parse ✓, reliability ✓, cost ✓ → **cost fails → no full run; stop and report.**
+Reading: pairwise judging is the most consistent reader we have tried (0.76 vs 0.69–0.72) at ~3.6× the price,
+and on 40 dialogues it is not better than absolute scoring at predicting the outcome (dC1 CI straddles 0,
+n = 40 as pre-stated). A cheaper variant (k = 2, two stances) would need a new amendment before any call.
+Spend: $0.96 of the $1.5 cap.
+
+## Amendment 9 (2026-10-30 08:05 KST, written before any call) — pairwise full run on held-out 2 as a validity test (owner cap raise)
+Owner decision (10/30 00:10): the P7-A cost rule stopped the automatic full run; the owner chose to fund one
+full pass anyway, as a validity test, because pairwise reading was the most reliable reader in the pilot
+(split-half 0.763 vs dist5 0.715). Same settings as the pilot (k = 4, three stances, muse-spark-1.3-contributor,
+effort low, seed 0), source held-out 2 (300 dialogues, overnight_2b records for turns/moves). Cap $8.
+- Judgment metric: R1(pairwise) on held-out 2 with bootstrap CI (same-scale partial Spearman on BT ratings,
+  table from fit_fine100), compared with R1(dist5) = +0.268 [+0.187, +0.340] and R1(fine100) = +0.257 on the
+  same 300 dialogues. Also report split-half reliability on 300, position bias, $/dialogue.
+- Rule: pairwise becomes the default reader only if R1(pairwise) lower bound > 0 AND point ≥ R1(dist5) AND
+  split-half ≥ dist5's 0.723. Otherwise dist5 stays and the pairwise result is reported as "most consistent
+  reader, not more valid, 3–4× cost". No held-out 1 run unless held-out 2 passes (would be a further amendment).
+
+#### P9-A pairwise full-run result (10/30 17:27 KST, pairwise_ho2/run.json, pairwise_ho2_fit/reliability.json, analysis/residual_pairwise_ho2.md) — decision
+| metric | pairwise (held-out 2, 300 dialogues, k=4, 3 stances) | dist5 (same 300) | rule |
+|---|---|---|---|
+| pairs / votes | 13,871 / 41,613 | — | — |
+| parse failures | 0 | 0 | — |
+| position bias (share "first") | 0.510 | — | ≈ 0.5 ✓ |
+| split-half reliability ρ | **0.789** (3,409 turns) | 0.723 | ≥ 0.723 ✓ |
+| R1 (n = 600 rows) | **+0.344 [+0.267, +0.414]** | +0.268 [+0.187, +0.340] | lower bound > 0 ✓, point ≥ 0.268 ✓ |
+| dC1 pairwise − dist5 | +0.048 [+0.008, +0.087] | — | reported (CI excludes 0) |
+| C1 / R4 | +0.472 / +0.462 | — | reported |
+| $/dialogue | **0.0244** ($7.31 total, 20.2M prompt + 26.4M completion tokens) | 0.0079 | 3.1× (reported) |
+All three pre-stated conditions hold → **pairwise becomes the default reader** per Amendment 9. Caveats: single
+held-out set (held-out 1 not run — a further amendment); cost is 3.1× dist5; the fit table (fit_fine100) is the
+fine100 value model, so R1 here is "pairwise ratings read through the fine100 table", same as the dist5 row.
+
+## Amendment 10 (2026-10-30 19:50 KST, written before any call) — pairwise confirmation on held-out 1
+Held-out 2 passed all three Amendment 9 conditions (R1 +0.344 [+0.267, +0.414] vs dist5 +0.268; split-half 0.789 vs 0.723;
+parse 0; position bias 0.510). Before pairwise replaces dist5 in the pipeline, run the same reader once on held-out 1
+(134 dialogues, overnight_1 records; k = 4, three stances, muse-spark-1.3-contributor, effort low, seed 0). Cap $4.
+- Report: R1(pairwise) with bootstrap CI vs R1(dist5) = +0.299 [+0.18, +0.42] on the same set, split-half, position bias, $/dialogue.
+- Rule: confirmation holds if R1(pairwise) lower bound > 0 AND point ≥ R1(dist5) point on held-out 1. If it holds, pairwise is
+  the default reader for both held-out sets and the demo pages are regenerated on it (task43). If it fails, held-out 2 result
+  stands as "most valid on one set", dist5 remains the default, and no further pairwise spend without a new amendment.
