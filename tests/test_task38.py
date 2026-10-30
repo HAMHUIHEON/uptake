@@ -189,11 +189,12 @@ def test_html_controls_guess_square_and_marks():
     assert 'data-g="!"' in html and 'data-g="="' in html
     assert 'data-g="?"' in html
     assert "나 0 / 해설자 0" in html
-    # square with zoomed axes + corner labels
+    # square with zoomed axes + one-sentence summary (task47 replaced corners)
     assert 'id="square"' in html
     assert "20–80" in html
-    for corner in ("둘 다 잘됨", "둘 다 잃음", "한쪽만"):
-        assert corner in html
+    assert "둘 다 잘됨" not in html
+    assert "둘 다 잃음" not in html
+    assert "한쪽만 평균(50) 위, A가 앞섬" in html
     # five mark labels
     for ko in ("묘수", "호수(좋은 수)", "특이수", "실수", "악수"):
         assert ko in html

@@ -40,6 +40,33 @@ _MOMENTUM_DECAY = 0.55
 _M_CLAMP = 3.0
 _SQUARE_LO = 20.0
 _SQUARE_HI = 80.0
+_TIDE_START_X = -0.5
+_PANEL_100_SCALES = ("fine100", "dist5")
+
+MOVE_KO = {
+    "reject": "거절",
+    "appeal_need": "사정 호소",
+    "counter": "역제안",
+    "concession": "양보",
+    "concede": "양보",
+    "propose": "제안",
+    "accept": "수락",
+    "inform": "설명",
+    "ask": "질문",
+    "pressure": "압박",
+    "praise": "칭찬",
+    "challenge": "반박",
+    "empathize": "공감",
+    "cooperate": "협력 제안",
+    "probe": "떠보기",
+    "appeal_fairness": "공정성 호소",
+    "repair": "수습",
+    "deflect": "회피",
+    "joke": "농담",
+    "reveal_preference": "선호 공개",
+    "smalltalk": "잡담",
+    "other": "발언",
+}
 
 
 def _num(value, default=0.0) -> float:
@@ -120,11 +147,15 @@ def hero_swings(momentum, k=3) -> list[dict]:
     return ranked[:kk]
 
 
-def spread_of_effect(effect) -> tuple:
+def spread_of_effect(effect, scale=None) -> tuple:
     """Per-turn judge spread: mean reading ``rel_spread``, else disagreement.
 
     Returns ``(value, source)`` with source one of ``"rel_spread"``,
     ``"disagreement"``, or ``None`` when the effect carries neither field.
+    A ``disagreement`` field is honoured only on 0–100 panel scales
+    (``fine100``/``dist5``); other scales (notably ``pairwise``) may carry
+    a stale value from another reading, which is ignored. ``scale=None``
+    keeps the unfiltered behaviour.
     """
     if not isinstance(effect, dict):
         return (None, None)
@@ -138,6 +169,8 @@ def spread_of_effect(effect) -> tuple:
     if vals:
         return (sum(vals) / len(vals), "rel_spread")
     if "disagreement" in effect:
+        if scale is not None and scale not in _PANEL_100_SCALES:
+            return (None, None)
         try:
             return (float(effect["disagreement"]), "disagreement")
         except (TypeError, ValueError):
@@ -216,6 +249,153 @@ def guess_class(z_resid) -> str:
 def score_guess(guess, z_resid) -> int:
     """+1 when the player's guess matches the panel's reading."""
     return 1 if guess == guess_class(z_resid) else 0
+
+
+def _has_jongseong(name) -> bool:
+    if not name:
+        return False
+    code = ord(str(name)[-1])
+    return 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0
+
+
+def _subj(name) -> str:
+    """Subject particle for a speaker label: 이/가."""
+    return "이" if _has_jongseong(name) else "가"
+
+
+def _conj(name) -> str:
+    """Conjunctive particle for a speaker label: 과/와."""
+    return "과" if _has_jongseong(name) else "와"
+
+
+def _much(x) -> str:
+    return "많이" if abs(_num(x)) >= 1.0 else "조금"
+
+
+def tide_caption(turns, momentum, speakers=None) -> str:
+    """One plain-language caption above the tide chart.
+
+    Names the first turn with |ΔM| >= 1.5 (speaker + move kind + gaining
+    side), the largest opposite-sign ΔM after it, and who leads at the end.
+    Turn numbers are ``#n`` (index, 0-based); unknown move labels fall back
+    to the raw label.
+    """
+    rows = list(turns or [])
+    moms = [_num(m) for m in (momentum or [])]
+    n = min(len(rows), len(moms))
+    if n <= 0:
+        return ""
+    if speakers is None:
+        speakers = speakers_of(rows)
+    plus = speakers[0] if len(speakers) > 0 else "A"
+    minus = speakers[1] if len(speakers) > 1 else "B"
+
+    def _side(d):
+        return plus if d >= 0 else minus
+
+    def _idx(i):
+        idx = rows[i].get("index") if isinstance(rows[i], dict) else None
+        if isinstance(idx, int) and not isinstance(idx, bool):
+            return idx
+        return i
+
+    def _who(i):
+        row = rows[i] if isinstance(rows[i], dict) else {}
+        return row.get("display") or row.get("speaker") or ""
+
+    def _spk(i):
+        row = rows[i] if isinstance(rows[i], dict) else {}
+        sp = row.get("speaker")
+        if isinstance(sp, str) and sp:
+            return sp
+        return _who(i)
+
+    def _disp(sp):
+        for r in rows:
+            if isinstance(r, dict) and r.get("speaker") == sp:
+                return r.get("display") or r.get("speaker") or sp
+        return sp
+
+    def _mv(i):
+        moves = rows[i].get("moves") or [] if isinstance(rows[i], dict) else []
+        raw = moves[0] if moves and isinstance(moves[0], str) else "발언"
+        return MOVE_KO.get(raw, raw)
+
+    deltas = [moms[0]] + [moms[i] - moms[i - 1] for i in range(1, n)]
+    final = moms[n - 1]
+    if abs(final) < 0.3:
+        ending = (f"마지막은 {plus}{_conj(plus)} {minus}{_subj(minus)} "
+                  f"팽팽하게 끝났다.")
+    else:
+        leader = plus if final > 0 else minus
+        ending = (f"마지막은 {leader}{_subj(leader)} {_much(final)} "
+                  f"앞선 채 끝.")
+    dec = next((i for i, d in enumerate(deltas) if abs(d) >= 1.5), None)
+    if dec is None:
+        return f"한쪽으로 크게 기울지 않았다. {ending}"
+    mv0 = _mv(dec)
+    actor0 = _who(dec)
+    gain0 = _disp(_side(deltas[dec]))
+    if _spk(dec) == _side(deltas[dec]):
+        out = (f"#{_idx(dec)}에서 {actor0}{_subj(actor0)} {mv0}하며 "
+               f"{gain0} 쪽으로 가져갔다")
+    else:
+        out = (f"#{_idx(dec)}에서 {actor0}{_subj(actor0)} {mv0}했지만 "
+               f"되려 {gain0} 쪽으로 넘어갔다")
+    d0 = deltas[dec]
+    best = None
+    for j in range(dec + 1, n):
+        if deltas[j] == 0:
+            continue
+        if (deltas[j] > 0) == (d0 > 0):
+            continue
+        if best is None or abs(deltas[j]) > abs(deltas[best]):
+            best = j
+    if best is not None:
+        mv1 = _mv(best)
+        actor1 = _who(best)
+        gain1 = _disp(_side(deltas[best]))
+        much1 = _much(deltas[best])
+        if _spk(best) == _side(deltas[best]):
+            out += (f", #{_idx(best)}에서 {actor1}{_subj(actor1)} {mv1}해 "
+                    f"{gain1}{_subj(gain1)} {much1} 되찾았다")
+        else:
+            out += (f", #{_idx(best)}에서 {actor1}{_subj(actor1)} {mv1}했지만 "
+                    f"{gain1}{_subj(gain1)} {much1} 되찾았다")
+    return out + ". " + ending
+
+
+def square_note(xs, ys, x_sp, y_sp) -> str:
+    """One-sentence square verdict against the 50 average.
+
+    Both below / both above / split; single-speaker records get a bare
+    verdict without naming a leader.
+    """
+    xs = list(xs or [])
+    ys = list(ys or [])
+    if not xs or not ys:
+        return ""
+    ra = standing_round(xs[-1])
+    rb = standing_round(ys[-1])
+    if not x_sp or not y_sp:
+        sole = ra if x_sp else rb
+        if sole > 50:
+            return "평균(50) 위"
+        if sole < 50:
+            return "평균(50) 아래"
+        return "평균(50)과 같음"
+    if ra == rb:
+        if ra > 50:
+            return "둘 다 평균(50) 위, 동점"
+        if ra < 50:
+            return "둘 다 평균(50) 아래, 동점"
+        return "둘 다 평균(50)과 같음"
+    lead = x_sp if ra > rb else y_sp
+    if ra > 50 and rb > 50:
+        return f"둘 다 평균(50) 위, {lead}{_subj(lead)} 더 앞섬"
+    if ra < 50 and rb < 50:
+        return f"둘 다 평균(50) 아래, {lead}{_subj(lead)} 덜 잃음"
+    return f"한쪽만 평균(50) 위, {lead}{_subj(lead)} 앞섬"
 
 
 def raw100_of(effect, scale, standing) -> float:
@@ -365,7 +545,7 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
         piv = pivot_by_index.get(idx, {})
         mark = piv.get("mark") if piv.get("mark") in MARKS else None
         span = timings.get(idx)
-        spread_val, spread_src = spread_of_effect(eff)
+        spread_val, spread_src = spread_of_effect(eff, scale)
         spreads.append(float(spread_val) if spread_val is not None else None)
         spread_srcs.append(spread_src)
         rec = {
@@ -416,6 +596,8 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
                       if xs else "")
     else:
         settlement = ""
+    caption = tide_caption(turns_out, momentum, speakers)
+    sq_note = square_note(xs, ys, x_sp, y_sp)
     item_id = item.get("id", "")
     if isinstance(item_id, str) and item_id:
         title = "Dialogue " + item_id + " — tide board"
@@ -457,6 +639,8 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
         "colors": colors,
         "display_names": {sp: names.get(sp, sp) for sp in speakers},
         "momentum": momentum,
+        "tide_start": {"x": _TIDE_START_X, "m": 0.0},
+        "caption": caption,
         "hero": {"top": hero_top, "runners": runners},
         "spread": spreads,
         "spread_src": band_src,
@@ -465,6 +649,7 @@ def build_view2(item, commentary, outcomes=None, audio_record=None,
         "square": {"x_sp": x_sp, "y_sp": y_sp, "xs": xs, "ys": ys,
                    "lo": _SQUARE_LO, "hi": _SQUARE_HI},
         "settlement": settlement,
+        "square_note": sq_note,
         "turns": turns_out,
         "outcomes": outcomes if outcomes is not None else None,
         "audio": audio,
@@ -545,6 +730,13 @@ audio{width:100%;margin-top:10px}
 .muted{color:var(--muted)}
 .conf-band{fill:#fff;opacity:.14;stroke:none}
 .sw{display:inline-block;width:10px;height:10px;border-radius:3px}
+.howto{border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:10px}
+.howto summary{cursor:pointer;font-weight:700;font-size:14px}
+.howto ul{margin:8px 0 4px;padding-left:20px;font-size:13px}
+.howto li{margin:4px 0}
+.howto .en{color:var(--muted)}
+.howto-intro{font-size:13px;margin:8px 0 0}
+#caption{font-size:14px;margin:0 0 8px}
 #hero{border:1px solid var(--border);border-radius:10px;padding:8px 10px;
   margin-bottom:10px;transition:border-color .3s ease,background-color .3s ease}
 #hero.reached{border-color:var(--accent);background:#16202e}
@@ -671,7 +863,7 @@ function bandD(pts){
   var k=Math.max(0,Math.min(N,shown));
   var idx=Math.floor(k),fr=smoothstep(k-idx);
   var up=Math.min(idx,N);
-  var hw=[];
+  var hw=[0];
   for(var i=0;i<up;i++)
     hw.push(spreadPx(turns[i].spread,turns[i].spread_src||data.spread_src));
   if(idx<N){
@@ -692,22 +884,22 @@ function bandD(pts){
   return smoothD(top)+"L"+rev[0][0].toFixed(1)+","+rev[0][1].toFixed(1)+
     smoothD(rev).slice(1)+"Z";
 }
-var TW=640,TH=300,padL=46,padR=14,padT=26,padB=22;
+var TW=640,TH=300,padL=46,padR=14,padT=26,padB=38;
 var tMid=(padT+TH-padB)/2,tAmp=(TH-padT-padB)/2/3.2;
 function tX(i){
-  if(N<=1)return padL+(TW-padL-padR)/2;
-  return padL+(i/(N-1))*(TW-padL-padR);
+  if(!N)return padL+(TW-padL-padR)/2;
+  return padL+((i+0.5)/(N-0.5))*(TW-padL-padR);
 }
 function tY(m){return tMid+clampM(m)*tAmp;}
 function tidePts(){
   var M=data.momentum||[];
-  var pts=[];
+  var pts=[[tX(-0.5),tMid]];
   var k=Math.max(0,Math.min(N,shown));
   var idx=Math.floor(k),fr=smoothstep(k-idx);
   var up=Math.min(idx,N);
   for(var i=0;i<up;i++)pts.push([tX(i),tY(M[i]||0)]);
   if(idx<N){
-    var x0=tX(0),y0=tMid;
+    var x0=tX(-0.5),y0=tMid;
     if(idx>0){x0=tX(idx-1);y0=tY(M[idx-1]||0);}
     var x1=tX(idx),y1=tY(M[idx]||0);
     pts.push([x0+(x1-x0)*fr,y0+(y1-y0)*fr]);
@@ -815,12 +1007,18 @@ function addXLabels(svg){
   var step=Math.max(1,Math.floor(N/8));
   for(var i=0;i<N;i+=step){
     var lab=svgEl("text");
-    lab.setAttribute("x",tX(i));lab.setAttribute("y",TH-6);
+    lab.setAttribute("x",tX(i));lab.setAttribute("y",TH-20);
     lab.setAttribute("text-anchor","middle");
     lab.setAttribute("class","axis-tx");
     lab.textContent=""+turns[i].index;
     svg.appendChild(lab);
   }
+  var cap=svgEl("text");
+  cap.setAttribute("x",(padL+TW-padR)/2);cap.setAttribute("y",TH-5);
+  cap.setAttribute("text-anchor","middle");
+  cap.setAttribute("class","axis-tx");
+  cap.textContent="발언 순서 (turn)";
+  svg.appendChild(cap);
 }
 function cumAt(fr,S,t){
   var f=fr[t]||{};
@@ -846,7 +1044,7 @@ function renderBands(svg){
   if(idx<N){
     var prev=(idx>0)?cumAt(fr,S,idx-1):even;
     var next=cumAt(fr,S,idx);
-    var x0=(idx>0)?tX(idx-1):tX(0),x1=tX(idx);
+    var x0=(idx>0)?tX(idx-1):tX(-0.5),x1=tX(idx);
     for(b=0;b<nb;b++){
       xs[b].push([x0+(x1-x0)*fr2,prev[b]+(next[b]-prev[b])*fr2]);
     }
@@ -943,20 +1141,6 @@ function renderSquare(){
     ly.setAttribute("class","axis-tx");
     ly.textContent=""+grid[g];
     svg.appendChild(ly);
-  }
-  var corners=[
-    [SW-sqR-4,sqT+12,"end","둘 다 잘됨"],
-    [sqL+4,SH-sqB-6,"start","둘 다 잃음"],
-    [sqL+4,sqT+12,"start","한쪽만"],
-    [SW-sqR-4,SH-sqB-6,"end","한쪽만"]
-  ];
-  for(var c=0;c<corners.length;c++){
-    var ct=svgEl("text");
-    ct.setAttribute("x",corners[c][0]);ct.setAttribute("y",corners[c][1]);
-    ct.setAttribute("text-anchor",corners[c][2]);
-    ct.setAttribute("class","sq-corner");
-    ct.textContent=corners[c][3];
-    svg.appendChild(ct);
   }
   var xs=sq.xs||[],ys=sq.ys||[];
   var n=Math.min(xs.length,ys.length);
@@ -1077,7 +1261,8 @@ function fmtS(v){
   return (n>=0?"+":"")+n;
 }
 function renderSettle(){
-  $("settle").textContent=data.settlement||"";
+  var note=data.square_note;
+  $("settle").textContent=(data.settlement||"")+(note?" — "+note:"");
   var oc=data.outcomes,tx="";
   if(oc&&oc.A&&oc.B){
     tx="actual likeness →"+(data.square.x_sp||"A")+" "+fmtS(oc.B.likeness)+
@@ -1338,6 +1523,59 @@ def _speaker_legend_html(view) -> str:
     return "".join(parts)
 
 
+def _howto_html(view) -> str:
+    speakers = view.get("speakers") or []
+    names = view.get("display_names") or {}
+    if len(speakers) > 0:
+        s0 = names.get(speakers[0], speakers[0])
+    else:
+        s0 = "A"
+    if len(speakers) > 1:
+        s1 = names.get(speakers[1], speakers[1])
+    else:
+        s1 = "B"
+    e0 = html.escape(str(s0))
+    e1 = html.escape(str(s1))
+    ko1 = (f"빨간 면 = {e0}의 영역, 파란 면 = {e1}의 영역. 경계선이 아래로 "
+           f"내려오면 {e0}{_subj(s0)} 밀고 있는 것, 올라오면 "
+           f"{e1}{_subj(s1)} 되찾는 것.")
+    en1 = (f"Red = {e0}'s water, blue = {e1}'s. Boundary moving down means "
+           f"{e0} is pushing; moving up means {e1} is pushing back.")
+    ko2 = f"점 하나 = 발언 하나(빨간 점 {e0}, 파란 점 {e1}). 가로 점선 = 50:50."
+    en2 = f"One dot = one turn (red {e0}, blue {e1}). Dashed line = 50:50."
+    ko3 = ("표시: !! 묘수 · ! 호수 · ? 실수 · ?? 악수 (그 발언이 보통 그런 "
+           "종류의 발언이 받아들여지는 정도보다 얼마나 더/덜 받아들여졌나)")
+    en3 = ("Marks: !! brilliant · ! good · ? mistake · ?? blunder (how much "
+           "better/worse received than usual for that kind of move).")
+    items = []
+    for ko, en in ((ko1, en1), (ko2, en2), (ko3, en3)):
+        items.append(f"<li>{ko} <span class=\"en\">{en}</span></li>")
+    return (
+        '<details class="howto" open><summary>읽는 법 · How to read'
+        "</summary>"
+        '<p class="howto-intro">양쪽 숫자는 관계 점수(잔고)입니다 '
+        "(0–100, 50이 평균). Scores are relationship standings "
+        "(0–100, 50 = average).</p>"
+        "<ul>" + "".join(items) + "</ul></details>"
+    )
+
+
+def _dot_legend_html(view) -> str:
+    if view.get("mode") == "bands":
+        return ""
+    speakers = view.get("speakers") or []
+    if not speakers:
+        return ""
+    names = view.get("display_names") or {}
+    d0 = names.get(speakers[0], speakers[0])
+    if len(speakers) >= 2:
+        d1 = names.get(speakers[1], speakers[1])
+        text = f"● 빨간 점 = {d0} 발언 · ● 파란 점 = {d1} 발언"
+    else:
+        text = f"● 빨간 점 = {d0} 발언"
+    return f'<span class="lg">{html.escape(text)}</span>'
+
+
 def _hero_html(view) -> str:
     hero = view.get("hero") if isinstance(view.get("hero"), dict) else None
     top = hero.get("top") if hero else None
@@ -1386,6 +1624,16 @@ def render_html(view) -> str:
         audio_tag = ""
     scale_label = _SCALE_LABELS.get(view.get("scale", "v2"),
                                     _SCALE_LABELS["v2"])
+    caption = view.get("caption") or ""
+    if caption:
+        caption_html = "<p id=\"caption\">" + html.escape(str(caption)) + "</p>"
+    else:
+        caption_html = ""
+    settle_full = str(view.get("settlement") or "")
+    sq_note = str(view.get("square_note") or "")
+    if sq_note:
+        settle_full = (settle_full + " — " + sq_note) if settle_full else sq_note
+    settle_html = "<p id=\"settle\">" + html.escape(settle_full) + "</p>"
     return (
         "<!DOCTYPE html>\n"
         '<html lang="ko">\n<head>\n<meta charset="utf-8">\n'
@@ -1399,8 +1647,10 @@ def render_html(view) -> str:
         "</header>\n"
         '<main class="layout">\n'
         '<section class="card"><h2>밀물/썰물 · Tide</h2>'
+        + _howto_html(view)
         + _hero_html(view)
         + '<div id="stands"></div>'
+        + caption_html +
         '<svg id="tide"></svg>'
         '<div class="controls">'
         '<button id="play" type="button">▶</button>'
@@ -1414,6 +1664,7 @@ def render_html(view) -> str:
         "</div>\n"
         + audio_tag + "\n"
         + '<div class="legend">' + _speaker_legend_html(view)
+        + _dot_legend_html(view)
         + _legend_html() + "</div></section>\n"
         '<section class="card" id="guessCard" style="display:none">'
         "<h2>다음 수 맞히기 · Guess mode</h2>"
@@ -1427,7 +1678,7 @@ def render_html(view) -> str:
         '<section class="card"><h2>정산 사각형 · Square</h2>'
         '<div class="sq-wrap">'
         '<svg id="square" width="360" height="320"></svg></div>'
-        '<p id="settle"></p><p id="likeness"></p>'
+        + settle_html + '<p id="likeness"></p>'
         '<p class="note">axes 20–80 (zoomed); dotted trail of all turns, '
         "last point large</p></section>\n"
         '<section class="card"><h2>전체 턴 · All turns</h2>'
