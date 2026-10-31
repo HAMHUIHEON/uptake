@@ -136,10 +136,11 @@ def test_full_page_sections(tmp_path):
     assert "<audio" not in html
 
 
-def test_without_casino_cards_show_no_result(tmp_path):
+def test_without_casino_cards_omit_outcome_line(tmp_path):
     item, com = _story_fixture()
     html = _run_main(tmp_path, item, com)
-    assert html.count("결과 없음") == 2
+    assert "결과 없음" not in html
+    assert 'class="outcome"' not in html
     assert "상대를" not in html
     assert "A · 50 → 21" in html
     assert "B · 50 → 14" in html
