@@ -13,12 +13,15 @@ import html
 import json
 from pathlib import Path
 
+from . import alerts
+from . import misread
 from .commentary import load_references, standing_round
 from .viewer2 import (
     MOVE_KO,
     SPEAKER_COLORS,
     build_view2,
     hero_swings,
+    momentum_series,
     resolve_audio_src,
     tide_caption,
     tide_y,
@@ -272,6 +275,15 @@ def _decisive_entry(n, pos, vt, com_turn, colors, names, trail) -> dict:
     else:
         idx = vt.get("index", 0)
     ref = com_turn.get("reference") if com_turn is not None else None
+    z_resid = None
+    if com_turn is not None and com_turn.get("z_resid") is not None:
+        z_resid = com_turn.get("z_resid")
+    elif vt.get("z_resid") is not None:
+        z_resid = vt.get("z_resid")
+    try:
+        zr = float(z_resid) if z_resid is not None else None
+    except (TypeError, ValueError):
+        zr = None
     return {
         "n": n,
         "pos": pos if isinstance(pos, int) else None,
@@ -280,8 +292,12 @@ def _decisive_entry(n, pos, vt, com_turn, colors, names, trail) -> dict:
         "display": display,
         "quote": _quote80(text),
         "line": line,
+        "moves": list(moves),
         "moves_ko": ko,
         "moves_raw": ", ".join(moves),
+        "standing_before": before,
+        "standing_after": after,
+        "z_resid": zr,
         "color": colors.get(speaker, "#333"),
         "reference": ref if isinstance(ref, dict) else {},
     }
@@ -497,19 +513,382 @@ def _flag_label(d) -> str:
         return f"#{s}" if s else ""
 
 
+def _load_scene_pool(scenes):
+    if scenes is None:
+        return []
+    if isinstance(scenes, (str, Path)):
+        try:
+            from .scenes import load_scenes as _load
+        except ImportError:
+            return []
+        try:
+            return _load(scenes)
+        except SystemExit:
+            return []
+    if isinstance(scenes, dict) and isinstance(scenes.get("scenes"), list):
+        return [s for s in scenes["scenes"] if isinstance(s, dict)]
+    if isinstance(scenes, list):
+        return [s for s in scenes if isinstance(s, dict)]
+    return []
+
+
+def _load_suggest_map(suggests) -> dict:
+    """Map turn index -> suggest notice ({alternatives, scene_id})."""
+    if suggests is None:
+        return {}
+    data = None
+    if isinstance(suggests, (str, Path)):
+        try:
+            with open(suggests, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return {}
+    else:
+        data = suggests
+    notices = []
+    if isinstance(data, dict) and isinstance(data.get("notices"), list):
+        notices = data["notices"]
+    elif isinstance(data, list):
+        notices = data
+    elif isinstance(data, dict):
+        # Direct {turn: {...}} mapping.
+        out: dict = {}
+        for key, val in data.items():
+            if not isinstance(val, dict):
+                continue
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            out[idx] = val
+        return out
+    out = {}
+    for n in notices:
+        if not isinstance(n, dict):
+            continue
+        idx = n.get("turn", n.get("index"))
+        if isinstance(idx, bool) or not isinstance(idx, int):
+            continue
+        out[idx] = n
+    return out
+
+
+def _is_blunder_entry(d) -> bool:
+    try:
+        from .scenes import is_blunder as _ib
+
+        return bool(_ib(d))
+    except ImportError:
+        pass
+    if not isinstance(d, dict):
+        return False
+    try:
+        zr = d.get("z_resid")
+        if zr is not None and float(zr) <= -1.5:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        b = float(d.get("standing_before", 50))
+        a = float(d.get("standing_after", 50))
+        return (b - a) >= 15
+    except (TypeError, ValueError):
+        return False
+
+
+def attach_notices(decisive, scenes=None, suggests=None, dialogue_id="",
+                   culture="mix", lang="ko") -> int:
+    """Attach notice data to blunder entries in place. Returns notice count."""
+    pool = _load_scene_pool(scenes)
+    sug_map = _load_suggest_map(suggests)
+    if not pool and not sug_map:
+        return 0
+    by_id = {str(s.get("id", "")): s for s in pool}
+    try:
+        from .scenes import pick_scene as _pick
+    except ImportError:
+        _pick = None
+    used: set[str] = set()
+    # Reserve suggested scene ids first so picks never repeat them.
+    for n in sug_map.values():
+        sid = n.get("scene_id", "") if isinstance(n, dict) else ""
+        if sid:
+            used.add(str(sid))
+    count = 0
+    blunder_pos = 0
+    for d in decisive or []:
+        if not isinstance(d, dict):
+            continue
+        if not _is_blunder_entry(d):
+            continue
+        idx = d.get("index", 0)
+        try:
+            idx_i = int(idx) if not isinstance(idx, bool) else 0
+        except (TypeError, ValueError):
+            idx_i = 0
+        sug = sug_map.get(idx_i, {})
+        alts = []
+        if isinstance(sug, dict):
+            raw_alts = sug.get("alternatives", [])
+            alts = [a for a in (raw_alts or []) if isinstance(a, dict)]
+        scene = None
+        sid = sug.get("scene_id", "") if isinstance(sug, dict) else ""
+        if sid and str(sid) in by_id:
+            scene = by_id[str(sid)]
+        elif _pick is not None and pool:
+            moves = d.get("moves", [])
+            if not moves:
+                raw = str(d.get("moves_raw", "") or "")
+                moves = [m.strip() for m in raw.split(",") if m.strip()]
+            try:
+                scene = _pick(moves or "other", dialogue_id, idx_i, pool,
+                              culture=culture, used=used,
+                              position=blunder_pos)
+            except (TypeError, ValueError):
+                scene = None
+            if scene is not None:
+                used.add(str(scene.get("id", "")))
+        elif pool:
+            # No picker: first unused scene (should not happen).
+            for s in sorted(pool, key=lambda x: str(x.get("id", ""))):
+                if str(s.get("id", "")) not in used:
+                    scene = s
+                    used.add(str(s.get("id", "")))
+                    break
+        try:
+            before = int(d.get("standing_before", 50))
+        except (TypeError, ValueError):
+            before = 50
+        try:
+            after = int(d.get("standing_after", 50))
+        except (TypeError, ValueError):
+            after = 50
+        d["notice"] = {
+            "before": before,
+            "after": after,
+            "display": d.get("display", d.get("speaker", "")),
+            "speaker": d.get("speaker", ""),
+            "alternatives": alts,
+            "scene": scene,
+            "lang": lang,
+        }
+        count += 1
+        blunder_pos += 1
+    return count
+
+
+def notice_html_for(entry, lang="ko") -> str:
+    """Render one decisive entry's notice block ("" when none)."""
+    if not isinstance(entry, dict):
+        return ""
+    notice = entry.get("notice")
+    if not isinstance(notice, dict):
+        return ""
+    lang = notice.get("lang", lang)
+    try:
+        from .scenes import render_notice as _render
+
+        return _render(
+            before=notice.get("before", 50),
+            after=notice.get("after", 50),
+            display=notice.get("display", ""),
+            alternatives=notice.get("alternatives", []),
+            scene=notice.get("scene"),
+            lang=lang,
+            speaker=notice.get("speaker", ""),
+        )
+    except ImportError:
+        pass
+    # Fallback without the scenes module (same content, plain).
+    before = notice.get("before", 50)
+    after = notice.get("after", 50)
+    display = html.escape(str(notice.get("display", "")))
+    parts = ['<div class="notice">',
+             f"<p class=\"warn\">⚠ 이 말은 {display}에게 "
+             f"{before} → {after}로 읽혔습니다</p>"]
+    alts = [a for a in (notice.get("alternatives", []) or [])
+            if isinstance(a, dict)]
+    if alts:
+        parts.append("<p class=\"althead\">이렇게 말해 볼 수도</p><ul>")
+        for a in alts:
+            try:
+                pct = int(round(float(a.get("p_better", 0.0)) * 100))
+            except (TypeError, ValueError):
+                pct = 0
+            parts.append("<li>“" + html.escape(str(a.get("text", "")))
+                         + f"” ({pct}%)</li>")
+        parts.append("</ul>")
+    scene = notice.get("scene")
+    if isinstance(scene, dict):
+        told = html.escape(str(scene.get("상황_한줄", "")))
+        tip = html.escape(str(scene.get("교훈", "")))
+        if told or tip:
+            parts.append(f"<p class=\"scene\">{told} {tip}</p>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _activity_rank(view) -> list:
+    """Speakers ranked by turn count, ties by first appearance."""
+    view = view if isinstance(view, dict) else {}
+    speakers = list(view.get("speakers") or [])
+    counts = {sp: 0 for sp in speakers}
+    first = {sp: i for i, sp in enumerate(speakers)}
+    for t in view.get("turns") or []:
+        sp = t.get("speaker") if isinstance(t, dict) else None
+        if sp in counts:
+            counts[sp] += 1
+        elif isinstance(sp, str) and sp:
+            counts[sp] = 1
+            first.setdefault(sp, len(first))
+    return sorted(counts, key=lambda sp: (-counts[sp], first.get(sp, 0)))
+
+
+def _first_sentence(text) -> str:
+    """First sentence of a case outcome (whole text when one sentence)."""
+    t = str(text or "").strip()
+    if not t:
+        return ""
+    for i, ch in enumerate(t):
+        if ch not in ".!?。！？":
+            continue
+        if (ch == "." and 0 < i < len(t) - 1
+                and t[i - 1].isdigit() and t[i + 1].isdigit()):
+            continue
+        return t[:i + 1].strip() or t
+    return t
+
+
+def _first_alert_card(commentary, view, names, alert_first):
+    """A decisive entry for the first-alert turn, or None if unbuildable."""
+    if not isinstance(alert_first, dict):
+        return None
+    target = alert_first.get("index")
+    if target is None or isinstance(target, bool):
+        return None
+    turns = view.get("turns") or []
+    if not isinstance(turns, list):
+        return None
+    pos = None
+    vt: dict = {}
+    for p, t in enumerate(turns):
+        if isinstance(t, dict) and t.get("index") == target:
+            pos, vt = p, t
+            break
+    if pos is None:
+        return None
+    com_turn = None
+    raw = commentary.get("turns") or []
+    if isinstance(raw, list):
+        for c in raw:
+            if isinstance(c, dict) and c.get("index") == target:
+                com_turn = c
+                break
+    colors = view.get("colors") or {}
+    if not isinstance(colors, dict):
+        colors = {}
+    trail = view.get("standings") or []
+    return _decisive_entry(1, pos, vt, com_turn, colors,
+                           names if isinstance(names, dict) else {},
+                           trail)
+
+
+def _insert_first_alert(decisive, commentary, view, names, alert_first):
+    """Render the first 경계+ turn as the first decisive card in place."""
+    if not isinstance(decisive, list) or not isinstance(alert_first, dict):
+        return
+    target = alert_first.get("index")
+    if target is None or isinstance(target, bool):
+        return
+    hit = next((d for d in decisive
+                if isinstance(d, dict) and d.get("index") == target), None)
+    if hit is not None:
+        decisive.remove(hit)
+        decisive.insert(0, hit)
+        hit["first_alert"] = True
+    else:
+        try:
+            entry = _first_alert_card(commentary, view, names, alert_first)
+        except (TypeError, ValueError):
+            entry = None
+        if entry is None:
+            return
+        entry["first_alert"] = True
+        decisive.insert(0, entry)
+    for i, d in enumerate(decisive):
+        if isinstance(d, dict):
+            d["n"] = i + 1
+
+
 def build_board2(item, commentary, outcomes=None, audio_src=None,
-                names=None) -> dict:
+                names=None, scenes=None, suggests=None, culture="mix",
+                lang="ko", panel=None, intent=None, case=None,
+                outcome_turn=None, genre=None,
+                **kwargs) -> dict:
     """Assemble the layer-2 board model from record + commentary JSON."""
+    if suggests is None:
+        suggests = kwargs.get("suggestions", kwargs.get("suggest"))
+    if scenes is None:
+        scenes = kwargs.get("scene_list", kwargs.get("scenes_path"))
+    if culture == "mix":
+        culture = kwargs.get("culture_option", culture)
+    if lang == "ko":
+        lang = kwargs.get("language", lang)
+    if panel is None:
+        panel = kwargs.get("panel")
+    if intent is None:
+        intent = kwargs.get("intent_map", kwargs.get("intents"))
+    if case is None:
+        case = kwargs.get("case_info")
+    if outcome_turn is None:
+        outcome_turn = kwargs.get("outcome_turn_value")
+    if genre is None:
+        genre = kwargs.get("genre_option")
     item = item if isinstance(item, dict) else {}
     commentary = commentary if isinstance(commentary, dict) else {}
     names = names if isinstance(names, dict) else {}
+    genre_name = None
+    if isinstance(genre, str) and genre.strip():
+        genre_name = genre.strip()
+    elif (isinstance(item.get("genre"), str)
+            and item.get("genre", "").strip()):
+        genre_name = item["genre"].strip()
     view = build_view2(item, commentary, outcomes=outcomes, names=names)
-    speakers = list(view.get("speakers") or [])[:2]
+    view_speakers = list(view.get("speakers") or [])
+    if len(view_speakers) >= 3:
+        ranked = _activity_rank(view)
+        speakers = ranked[:6]
+        tide_pair = ranked[:2]
+        try:
+            momentum = [float(m) for m in
+                        momentum_series(view.get("turns"), tide_pair)]
+        except (TypeError, ValueError):
+            momentum = list(view.get("momentum") or [])
+        rest = ranked[2:]
+    else:
+        speakers = view_speakers[:2]
+        momentum = list(view.get("momentum") or [])
+        rest = []
     disp_names = view.get("display_names") or {}
     trail = view.get("standings") or []
     last = trail[-1] if trail else {}
     if not isinstance(last, dict):
         last = {}
+    colors_all = view.get("colors") or {}
+    if not isinstance(colors_all, dict):
+        colors_all = {}
+    other_speakers = []
+    for sp in rest:
+        try:
+            standing = standing_round(last.get(sp, 50.0))
+        except (TypeError, ValueError):
+            standing = 50
+        other_speakers.append({
+            "speaker": sp,
+            "display": disp_names.get(sp, sp),
+            "standing": standing,
+            "color": colors_all.get(sp, "#333"),
+        })
     cards = []
     for sp in speakers:
         try:
@@ -529,25 +908,105 @@ def build_board2(item, commentary, outcomes=None, audio_src=None,
             "color": (view.get("colors") or {}).get(sp, "#333"),
         })
     decisive = decisive_of(commentary, view, names)
+    item_id = item.get("id", "")
+    item_id = item_id if isinstance(item_id, str) else str(item_id or "")
+    panel_data = misread.load_panel(panel)
+    analyses = misread.analyze_panel(panel_data) if panel_data else []
+    by_index = {a["index"]: a for a in analyses}
+    panel_analyses = analyses if panel_data else None
+    times: dict = {}
+    for src in (item, panel_data):
+        effs = src.get("effects", []) if isinstance(src, dict) else []
+        for pos, e in enumerate(effs or []):
+            if not isinstance(e, dict) or "time" not in e:
+                continue
+            idx = e.get("index", pos)
+            if isinstance(idx, bool) or not isinstance(idx, int):
+                try:
+                    idx = int(idx)
+                except (TypeError, ValueError):
+                    idx = pos
+            if idx not in times:
+                times[idx] = e.get("time")
+    alert_list = alerts.compute_alerts(
+        view.get("turns"), genre=genre_name,
+        analyses=panel_analyses, times=times)
+    alert_first = alerts.first_alert(alert_list)
+    alert_lead = alerts.lead_time(alert_list, outcome_turn=outcome_turn)
+    _insert_first_alert(decisive, commentary, view, names, alert_first)
+    if scenes is not None or suggests is not None:
+        try:
+            attach_notices(decisive, scenes=scenes, suggests=suggests,
+                           dialogue_id=item_id, culture=culture, lang=lang)
+        except Exception:
+            pass
     flags = [{"n": _flag_label(d), "pos": d["pos"], "color": d["color"]}
              for d in decisive if d["pos"] is not None]
+    for d in decisive:
+        if not isinstance(d, dict):
+            continue
+        a = by_index.get(d.get("index"))
+        if a is not None and a.get("majority"):
+            d["misread_line"] = misread.card_line(
+                a, before=d.get("standing_before"),
+                after=d.get("standing_after"))
+        else:
+            d["misread_line"] = ""
+    strip: list[str] = []
+    if panel_data:
+        all_speakers = list(view.get("speakers") or [])
+        for a in misread.top_misread(analyses, k=5):
+            sp = a.get("speaker", "")
+            disp = disp_names.get(sp, sp)
+            listener = misread.listener_of(a.get("listeners", []), sp,
+                                           all_speakers)
+            li_disp = disp_names.get(listener, listener) if listener else "상대"
+            intent_first = (a.get("intent") or ["발언"])[0]
+            rep = a.get("rep_ko") or a.get("majority_ko") or "?"
+            strip.append(misread.strip_flag(a.get("index", 0), disp,
+                                            intent_first, li_disp, rep))
+    mis_n = sum(1 for a in analyses if a.get("misread"))
+    intent_list = alerts.intent_rows(
+        item=item, view=view, analyses=panel_analyses, intent=intent,
+        trail=trail, panel=panel_data)
+    case_info = alerts.load_case(case)
     caption = view.get("caption") or ""
     if not caption:
         caption = "발언 기록이 비어 있습니다"
-    item_id = item.get("id", "")
-    item_id = item_id if isinstance(item_id, str) else str(item_id or "")
+    case_verdict = ""
+    if isinstance(case_info, dict):
+        case_verdict = _first_sentence(case_info.get("outcome", ""))
+    verdict = case_verdict if case_verdict else caption
+    verdict_sub = (caption if (case_verdict and case_verdict != caption)
+                   else "")
     dash = f"dashboard_{item_id}.html" if item_id else "dashboard.html"
     return {
         "id": item_id,
-        "verdict": caption,
+        "verdict": verdict,
+        "verdict_sub": verdict_sub,
+        "caption": caption,
         "cards": cards,
-        "momentum": list(view.get("momentum") or []),
+        "other_speakers": other_speakers,
+        "momentum": momentum,
         "flags": flags,
         "decisive": decisive,
+        "panel": bool(panel_data),
+        "misread_strip": strip,
+        "misread_count": mis_n,
+        "misread_total": len(analyses),
+        "alerts": alert_list,
+        "alert_first": alert_first,
+        "alert_lead": alert_lead,
+        "alert_genre": genre_name,
+        "alert_weight": alerts.stakes_weight(genre_name),
+        "outcome_turn": outcome_turn,
+        "intent_rows": intent_list,
+        "case": case_info,
         "lesson": lesson_of(decisive),
         "lesson_source": lesson_source_of(decisive),
         "dashboard": dash,
         "audio_src": str(audio_src) if audio_src else None,
+        "lang": lang,
     }
 
 
@@ -561,9 +1020,14 @@ h2{font-size:16px;margin:26px 0 8px;border-bottom:1px solid #e3e6ea;padding-bott
 h2 small{font-weight:400}
 small{color:#5b6470}
 .verdict{font-size:24px;font-weight:700;margin:8px 0 4px}
+.badge{display:inline-block;border:1px solid #c9d1d9;border-radius:999px;
+  padding:1px 10px;font-size:13px;color:#5b6470;background:#f7f8fa}
 .sub{color:#5b6470;margin:0}
-.cards{display:flex;gap:12px}
-.score{flex:1;border:1px solid #e3e6ea;border-radius:12px;padding:12px;
+.strip{margin:4px 0;padding-left:22px}
+.strip li{margin:2px 0}
+.misread{margin:6px 0}
+.cards{display:flex;gap:12px;flex-wrap:wrap}
+.score{flex:1 1 150px;border:1px solid #e3e6ea;border-radius:12px;padding:12px;
   background:#f7f8fa;min-width:0}
 .scoreline{font-size:18px;font-weight:700;margin:0}
 .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px}
@@ -575,6 +1039,14 @@ small{color:#5b6470}
 .quote{font-weight:700;margin:0}
 .line{margin:6px 0}
 .movekind{margin:0;color:#5b6470;font-size:13px}
+.notice{border:1px dashed #d0b429;border-radius:10px;padding:10px 12px;margin:8px 0;
+  background:#fffbe6}
+.warn{font-weight:700;margin:0}
+.althead{font-weight:700;margin:8px 0 4px}
+.alts{margin:4px 0;padding-left:22px}
+.pct{color:#5b6470;font-size:13px}
+.scene{margin:8px 0 0}
+.src{margin:2px 0 0;color:#5b6470;font-size:13px}
 blockquote{border-left:3px solid #2f6fed;margin:8px 0;padding:4px 12px;font-size:17px}
 .lsrc{font-size:13px;color:#5b6470}
 footer{margin-top:28px;border-top:1px solid #e3e6ea;padding-top:10px;
@@ -586,6 +1058,14 @@ footer{margin-top:28px;border-top:1px solid #e3e6ea;padding-top:10px;
 .mid{stroke:#9aa4b2;stroke-width:1;stroke-dasharray:4 3}
 .flag line{stroke-width:2}
 .flag text{font-size:11px;font-weight:700;fill:#fff;text-anchor:middle}
+.alert-strip{display:flex;gap:2px;margin:6px 0}
+.tick{flex:1 1 0;height:14px;border-radius:3px;min-width:4px}
+.alert-flag{font-weight:700;margin:6px 0}
+.intent{width:100%;border-collapse:collapse;font-size:14px}
+.intent th,.intent td{border:1px solid #e3e6ea;padding:6px 8px;text-align:left;
+  vertical-align:top}
+.intent thead th{background:#f7f8fa}
+.case-title{font-weight:700;margin:0}
 audio{width:100%;margin-top:10px}
 """
 
@@ -601,6 +1081,25 @@ def _legend_html(cards) -> str:
     else:
         return ""
     return '<p class="legend">' + html.escape(text) + "</p>"
+
+
+def _others_html(board) -> str:
+    """Small "다른 화자" line: speakers past the tide pair + standings."""
+    others = board.get("other_speakers") or []
+    bits = []
+    for o in others:
+        if not isinstance(o, dict):
+            continue
+        disp = o.get("display", o.get("speaker", ""))
+        try:
+            st = int(o.get("standing", 50))
+        except (TypeError, ValueError):
+            st = 50
+        bits.append(f"{disp} {st}")
+    if not bits:
+        return ""
+    return ('<p class="note">다른 화자: '
+            + html.escape(" · ".join(bits)) + "</p>")
 
 
 def render_html(board) -> str:
@@ -622,13 +1121,16 @@ def render_html(board) -> str:
         arrow = html.escape(str(c.get("arrow", "")))
         word = html.escape(str(c.get("word", "")))
         oc = c.get("outcome")
-        oc_html = html.escape(str(oc)) if oc else "결과 없음"
+        if oc:
+            oc_tag = '<p class="outcome">' + html.escape(str(oc)) + "</p>"
+        else:
+            oc_tag = ""
         cards_html.append(
             '<div class="score"><p class="scoreline">'
             f'<span class="sw" style="background:{col}"></span> '
             f"{disp} · 50 → {end}</p>"
             f'<p class="delta">{arrow} {word}</p>'
-            f'<p class="outcome">{oc_html}</p></div>'
+            f"{oc_tag}</div>"
         )
     moments = []
     for d in board.get("decisive") or []:
@@ -659,12 +1161,29 @@ def render_html(board) -> str:
             scene_html = ""
         if not isinstance(scene_html, str):
             scene_html = ""
+        try:
+            notice_block = notice_html_for(d)
+        except Exception:
+            notice_block = ""
+        if not isinstance(notice_block, str):
+            notice_block = ""
+        mline = d.get("misread_line", "")
+        if isinstance(mline, str) and mline:
+            mis_html = ('<p class="misread">' + html.escape(mline) + "</p>")
+        else:
+            mis_html = ""
+        if d.get("first_alert"):
+            fa_badge = ' <span class="badge">첫 경보</span>'
+        else:
+            fa_badge = ""
         moments.append(
             '<article class="moment">'
-            f'<p class="quote">#{idx_s} {disp} — "{quote}"</p>'
+            f'<p class="quote">#{idx_s} {disp} — "{quote}"{fa_badge}</p>'
             f'<p class="line">{line}</p>'
             f"{mko_tag}"
+            f"{mis_html}"
             f"{scene_html}</article>"
+            f"{notice_block}"
         )
     if moments:
         moments_html = "".join(moments)
@@ -696,28 +1215,78 @@ def render_html(board) -> str:
             str(audio_src), quote=True) + '"></audio>'
     else:
         audio_html = ""
+    lang_attr = "en" if str(board.get("lang", "ko")).lower().startswith("en") else "ko"
+    has_panel = bool(board.get("panel"))
+    if has_panel:
+        badge_html = ""
+        strip = [s for s in (board.get("misread_strip") or [])
+                 if isinstance(s, str) and s]
+        if strip:
+            lis = "".join("<li>" + html.escape(s, quote=False) + "</li>"
+                          for s in strip)
+            strip_html = (
+                "<section><h2>오해 지점 <small>Misread turns</small></h2>"
+                f'<ul class="strip">{lis}</ul></section>\n'
+            )
+        else:
+            strip_html = (
+                "<section><h2>오해 지점 <small>Misread turns</small></h2>"
+                '<p class="note">오해 지점 없음</p></section>\n'
+            )
+        try:
+            mis_n = int(board.get("misread_count", 0))
+        except (TypeError, ValueError):
+            mis_n = 0
+        try:
+            mis_total = int(board.get("misread_total", 0))
+        except (TypeError, ValueError):
+            mis_total = 0
+        count_html = (f'<p class="note">어긋난 턴 {mis_n} / {mis_total}</p>')
+    else:
+        badge_html = '<p><span class="badge">관계 축만</span></p>'
+        strip_html = ""
+        count_html = ""
+    case_html = alerts.case_block_html(board.get("case"))
+    alert_html = alerts.alert_strip_html(
+        board.get("alerts"), outcome_turn=board.get("outcome_turn"),
+        genre=board.get("alert_genre"))
+    intent_html = alerts.intent_table_html(board.get("intent_rows"))
+    source_html = alerts.case_source_html(board.get("case"))
+    vsub = board.get("verdict_sub", "")
+    if isinstance(vsub, str) and vsub:
+        verdict_sub_html = '<p class="sub">' + html.escape(vsub) + "</p>"
+    else:
+        verdict_sub_html = ""
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="ko">\n<head>\n<meta charset="utf-8">\n'
+        f'<html lang="{lang_attr}">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>관계 보드 — {item_id}</title>\n"
         "<style>" + _CSS + "</style>\n</head>\n<body>\n"
         "<h1>관계 보드 <small>Relationship board</small></h1>\n"
         f'<p class="note">{item_id}</p>\n'
+        + case_html +
         "<section><h2>한 문장 <small>Verdict</small></h2>"
         f'<p class="verdict">{verdict}</p>'
+        + verdict_sub_html + badge_html +
         "<p class=\"sub\">관계 점수는 상대 눈에 비친 점수입니다 "
         "(50 = 보통)</p></section>\n"
         "<section><h2>관계 점수 <small>Score</small></h2>"
-        '<div class="cards">' + "".join(cards_html) + "</div></section>\n"
+        '<div class="cards">' + "".join(cards_html) + "</div>"
+        + count_html + "</section>\n"
+        + strip_html
+        + alert_html +
         "<section><h2>흐름 <small>Tide</small></h2>"
         + tide_svg(board.get("momentum"), board.get("flags"))
-        + _legend_html(cards) + audio_html + "</section>\n"
+        + _legend_html(cards) + _others_html(board) + audio_html
+        + "</section>\n"
         "<section><h2>결정적 순간 <small>Decisive moments</small></h2>"
         + moments_html + "</section>\n"
+        + intent_html
         + lesson_html +
         "<footer><p>모델이 발언을 읽은 것이지 사람을 판정한 것이 아닙니다</p>"
-        f'<p>자세한 대시보드: <a href="{dash}">{dash}</a></p></footer>\n'
+        f'<p>자세한 대시보드: <a href="{dash}">{dash}</a></p>'
+        + source_html + "</footer>\n"
         "</body>\n</html>\n"
     )
 
@@ -731,6 +1300,20 @@ def main(argv=None) -> None:
     ap.add_argument("--names", default=None,
                     help="JSON object mapping speaker labels to display names")
     ap.add_argument("--audio", default=None)
+    ap.add_argument("--scenes", default=None)
+    ap.add_argument("--suggests", "--suggestions", "--suggest",
+                    dest="suggests", default=None)
+    ap.add_argument("--culture", default="mix",
+                    choices=["east", "west", "mix"])
+    ap.add_argument("--lang", default="ko", choices=["ko", "en"])
+    ap.add_argument("--panel", default=None,
+                    help="0-100/dist5 panel record of the same dialogue")
+    ap.add_argument("--intent", default=None,
+                    help="JSON object {turn: intent note} or a path to one")
+    ap.add_argument("--case", default=None,
+                    help="JSON {title, outcome, source_url, note} or a path")
+    ap.add_argument("--outcome-turn", type=int, default=None,
+                    help="outcome turn index (default: the last turn)")
     args = ap.parse_args(argv)
 
     with open(args.item, encoding="utf-8") as f:
@@ -760,5 +1343,13 @@ def main(argv=None) -> None:
         outcomes=outcomes,
         audio_src=resolve_audio_src(args.audio, out_path),
         names=names,
+        scenes=args.scenes,
+        suggests=args.suggests,
+        culture=args.culture,
+        lang=args.lang,
+        panel=args.panel,
+        intent=args.intent,
+        case=args.case,
+        outcome_turn=args.outcome_turn,
     )
     out_path.write_text(render_html(board), encoding="utf-8")
