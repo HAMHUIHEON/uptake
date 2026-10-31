@@ -33,7 +33,13 @@ uptake-rescore = "forecaster.rescore:main"
 uptake-scale = "forecaster.scalecheck:main"
 uptake-pairwise = "forecaster.pairwise:main"
 uptake-audio-panel = "forecaster.audiopanel:main"
+uptake-align = "forecaster.align:main"
 uptake-perturb = "forecaster.perturb:main"
+uptake-play-server = "forecaster.play_server:main"
+uptake-play = "forecaster.play_server:play_main"
+uptake-scenes-eval = "forecaster.scenes_eval:main"
+uptake-scenes = "forecaster.scenes:main"
+uptake-suggest = "forecaster.suggest:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]
