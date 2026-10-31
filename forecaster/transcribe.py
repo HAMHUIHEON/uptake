@@ -130,8 +130,11 @@ def _api_key() -> str:
     return os.environ.get("META_API_KEY") or os.environ.get("MODEL_API_KEY") or ""
 
 
-def transcribe_wav(path, post=None, max_retries=4, timestamps=True) -> str:
+def transcribe_wav(path, post=None, max_retries=4, timestamps=True,
+                   model=None) -> str:
     payload = dict(REQUEST_PAYLOAD)
+    if model is not None:
+        payload["model"] = model
     payload["timestamps"] = bool(timestamps)
     req_json = json.dumps(payload)
     p = Path(path)
@@ -190,11 +193,12 @@ def transcribe_wav(path, post=None, max_retries=4, timestamps=True) -> str:
 
 
 def transcribe_file(src, work_dir, post=None, timestamps=True,
-                    chunk_s=540) -> list[Turn]:
+                    chunk_s=540, model=None) -> list[Turn]:
     chunks = to_wav_chunks(src, work_dir, chunk_s=chunk_s)
     turns: list[Turn] = []
     for idx, chunk_path in enumerate(chunks):
-        text = transcribe_wav(chunk_path, post=post, timestamps=timestamps)
+        text = transcribe_wav(chunk_path, post=post, timestamps=timestamps,
+                              model=model)
         parsed = None
         if timestamps:
             try:
