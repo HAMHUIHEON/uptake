@@ -387,3 +387,103 @@ works, places replaced by roles). Ground truth: `해석` (the recipient's actual
   masked; M3 = M1 − M2 (memorization gap). Verdict: "reads famous scenes" if M1 ≥ 0.60 and M3 ≤ 0.15; if M1 ≥ 0.60 but
   M3 > 0.15 report as "partly from memory"; M1 < 0.45 → report as not supported. Small n: report Wilson 95% intervals.
 - Scenes, predictions and judgments are saved under data/private/scale6/scenes30/. The 56-scene 평가셋 is NOT touched.
+
+## Amendment 13 (2026-10-30 21:15 KST, written before any call; runs overnight) — dose–response of single-turn edits
+Question: does a small edit move the reader a little and a big edit a lot? Material: the 20 Amendment-11 targets. Two
+graded variants per target written by muse-spark-1.3 from fixed prompts: SLIGHT (one softening/hardening touch, e.g. drop
+"please" or add "no offence") and STRONG (the Amendment-11 RUDE wording). Pairs: (orig, slight), (orig, strong),
+(slight, strong), both orders × 3 stances = 18 votes per target, 360 calls, cap $0.5.
+Pre-stated: "graded" if (a) slight > strong on majority in ≥ 14/20 targets and (b) mean margin(orig vs strong) >
+mean margin(orig vs slight). Only (a) → "ordinal but flat"; neither → "not graded". Saved under scale6/perturb_dose/.
+
+## Amendment 14 (2026-10-30 21:25 KST, written before any call; runs overnight) — does more voting buy reliability?
+Question: can the pairwise reader's split-half reliability (0.789 on held-out 2 at k=4, 3 stances) be raised by asking
+more? Material: 40 held-out-2 dialogues (ids = first 40 of ids_ho2.txt). Conditions: (a) k=8, 3 stances; (b) k=4,
+5 stances (add 피로한/급한 to 중립/우호/의심 as fixed prompt constants). Model 1.3-contributor, cap $3 total.
+Metrics: split-half reliability per condition vs the k=4/3-stance baseline on the same 40 (recomputed from the ho2 pairs
+restricted to these ids), rating correlation with the baseline, cost per dialogue. Pre-stated: adopt a condition for the
+demo reader only if reliability ≥ baseline + 0.04 at ≤ 2.5× cost; otherwise report "more votes do not help".
+
+#### P12-A result (10/30 21:45 KST, scale6/scenes30/, analysis/scenes30_1031.md) — decision
+| metric | value | rule |
+|---|---|---|
+| M1 match-or-partial, real names (majority of 3 stances) | **0.80 (24/30)** [0.63, 0.91] | ≥ 0.60 ✓ |
+| M2 same, masked (names/works replaced by roles) | **0.80 (24/30)** | — |
+| M3 = M1 − M2 (memorization gap) | 0.00 [−0.20, 0.20] | ≤ 0.15 ✓ |
+| per 계열 (real) | 고전 4/6 · 문학 11/14 · 역사 9/10 | — |
+| reception vs ground truth | 오해 장면 24 → 나쁘게 18 / 잘 4 / 보통 2; 통함 장면 6 → 잘 4 / 나쁘게 2 | reported |
+| spend | $0.07 (read $0.035 + judge $0.03) | cap $0.5 ✓ |
+Verdict per the pre-stated rule: **reads famous scenes** (M1 ≥ 0.60, gap ≤ 0.15). Masked = real, so the predictions do
+not depend on recognizing the work. Caveats: judge is the same model family as the reader; "partial" counts; n = 30.
+
+#### P13-A result (10/30 21:50 KST, scale6/perturb_dose/, analysis/perturb_dose_1031.md) — decision
+| metric | value | rule |
+|---|---|---|
+| slight > strong (majority) | **20/20** | ≥ 14 ✓ |
+| mean margin orig vs slight / orig vs strong | +0.575 / +1.000 | strong > slight ✓ |
+| orig > slight / orig > strong / slight > strong predicted | 16/20 · 20/20 · 20/20 | reported |
+| position bias / spend | 0.503 / $0.16 | — |
+Verdict per the pre-stated rule: **graded** — a small hardening moves the reader a little, a strong one a lot.
+Note: the Amendment-10 analysis block that chain 1 wrote at 21:53 is INVALID (the wait loop matched a stale "ho1 exit"
+line from the 19:47 failed launch and ran fit on an incomplete pairs file; reliability printed 0 with n_turns 0). The run
+itself continues; the analysis is re-run after the process exits (tools/ho1_post.sh).
+
+Amendment 14 — execution note (10/30 23:10): the first run pointed `--src` at overnight_2 (held-out 1 records) so the
+held-out-2 ids matched nothing (0 pairs, $0). Re-run with `--src overnight_2b`. A fresh baseline condition (c) k=4, 3
+stances, same 40 ids and seed is added so all three are read under identical conditions; cap raised from $3 to $4 for
+the added baseline. Rule unchanged.
+
+#### P10-A result (10/31 00:07 KST, held-out 1, 134 dialogues, scale6/pairwise_ho1/, ho1_post.log) — decision
+| metric | pairwise | dist5 (same set) | rule |
+|---|---|---|---|
+| votes / parse failures | 37,050 / 0 | — | — |
+| split-half reliability | **0.764** | 0.699 | ≥ 0.699 ✓ |
+| R1 (final likeness) | **+0.277 [+0.152, +0.404]** | +0.299 [+0.175, +0.418] | lower bound > 0 ✓ · point ≥ +0.299 **✗** |
+| dC1 vs panel raw | −0.026 [−0.079, +0.026] | — | reported |
+Verdict per the pre-stated rule: **not replicated on held-out 1** (reliability condition met, outcome-prediction condition
+missed by 0.02). Pooled over both sets (434 dialogues): pairwise R1 ≈ +0.323 vs dist5 ≈ +0.278; reliability higher on both
+(0.789/0.764 vs 0.723/0.699). Decision: pairwise stays the default reader (Amendment 9), but the claim is stated as
+"more reliable on both sets; outcome prediction better on one set and equal within noise on the other".
+
+## Amendment 15 (2026-10-31 00:20 KST, written before any computation; no new API calls) — ensemble of two readers
+Question: does averaging the pairwise rating and the dist5 panel reading (both already collected on held-out 1 and 2)
+predict the outcome better than either alone, with reliability not below pairwise? Method: per set, z-score each reader's
+per-turn value with that reader's global mean/sd on the set, average the two z's per turn (equal weights, pre-stated), and
+rescale to the pairwise sd so `uptake-scale residual --same-scale` can read it against `fit_fine100`. Metrics: R1 with CI
+vs pairwise alone and dist5 alone on both sets; split-half reliability is not defined for an average of two single
+readings, so only R1 is judged. Rule: adopt the ensemble for the demo reader only if R1(ensemble) ≥ R1(best single) on
+BOTH sets; otherwise report as "no gain from averaging". Output: scale6/ensemble_ho{1,2}/records, analysis/residual_ensemble_ho{1,2}.md.
+
+#### P15-A result (10/31 00:10 KST, no new calls) — decision
+| set | ensemble R1 | pairwise R1 | dist5 R1 | rule (≥ best single) |
+|---|---|---|---|---|
+| held-out 1 (134) | +0.297 [+0.174, +0.421] | +0.277 | +0.299 | ✗ (−0.002) |
+| held-out 2 (300) | +0.324 [+0.246, +0.395] | +0.344 | +0.268 | ✗ (−0.020) |
+Verdict: **no gain from averaging** — the ensemble lands between the two readers on each set. Not adopted.
+
+#### P14-A result (10/31 04:10 KST, 40 held-out-2 dialogues, same seed; scale6/pairwise_{base40,k8,s5}_fit/) — decision
+| condition | pairs | votes used | spend | split-half ρ | Δ vs (c) | cost vs (c) | Spearman with (c) ratings |
+|---|---|---|---|---|---|---|---|
+| (c) k=4, 3 stances (baseline) | 1,949 | 4,557 | $0.80 | 0.736 (n=435) | — | 1.0× | — |
+| (a) k=8, 3 stances | 3,869 | 9,098 | $1.60 | **0.863** (n=486) | **+0.127** | 2.0× | 0.913 |
+| (b) k=4, 5 stances | 1,949 | 7,933 | $1.40 | 0.797 (n=439) | +0.061 | 1.75× | 0.935 |
+All three runs stopped on their budget cap, so "votes used" is what the cap bought. The reliability-split lines in
+amend14_rerun.log (0.0, n_turns 0) came from pointing that CLI at a pairs dir; the numbers above are split_half_rho from
+`uptake-pairwise fit` on the fitted records, the same statistic used in P9/P10.
+Verdict per the pre-stated rule (≥ +0.04 at ≤ 2.5× cost): (a) and (b) both pass; **(a) k=8, 3 stances is adopted for the
+demo reader** (largest gain and more gain per dollar). More comparison partners per turn beat more stances on the same
+pairs. Caveat: split-half reliability rises with vote count by construction, so this is a cost-for-reliability trade, not
+a better judge; rating order is stable across conditions (Spearman 0.91–0.94), so k=8 refines rather than reorders.
+
+## Amendment 16 (2026-10-31 04:40 KST, written before the 7-case run; a 22-turn pilot on usair1549 preceded it to check format and time) — misread panel on the 8 public-record cases
+Question: the case boards so far carry only the pairwise favourability dial, under which alerts do not separate tragedies
+from successes (오버나이트_4_결과 table). Does the original frame — 의도 (speaker move) vs 해석 (listener's majority next_action),
+task57 misread severity — flag the known decisive turns? Material: the 8 case records (374 turns), `uptake-board --n 3`
+(3 readings/turn, window 6), model 1.3-contributor, socket timeout 120 s, 4 workers per case, cases in parallel. Cost
+cap: ≤ $3 total (estimated < $0.5 from pairwise per-call cost; `uptake-board` has no --budget, so the cap is enforced by
+turn count). Pre-stated reading (not a pass/fail rule — this is descriptive): for each case, list the 경계+ turns under
+severity mode and state whether the historically decisive turn (Tenerife "We are now at takeoff" / Air Florida "that's not
+right" / Avianca "running out of fuel" / Lear "Nothing, my lord." / Reykjavik SDI-laboratory turn / 1549 callsign
+confusion / Sejong rebuttal / D2N068 plan turn) is at 경계 or above; report the count out of 8. Known artifact from the
+pilot: a generic move 발언 invites no action, so every reading counts as "outside" → severity 1 on those turns (to be fixed
+by Muse, not tonight); the reading above will be reported with and without 발언-only turns.
