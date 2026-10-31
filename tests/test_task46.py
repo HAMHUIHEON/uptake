@@ -322,3 +322,223 @@ def test_report_insensitive_below_threshold(tmp_path):
     m = PT.compute_report_metrics(votes, variants)
     assert m["ordering_accuracy"] == pytest.approx(0.25)
     assert m["verdict"] == "insensitive at single-turn edits"
+
+
+# --- dose (task54, Amendment 13) -------------------------------------------
+
+def test_dose_prompts_auditable():
+    assert isinstance(PT.SLIGHT_REWRITE_PROMPT, str)
+    assert "one small" in PT.SLIGHT_REWRITE_PROMPT.lower()
+    assert "harden" in PT.SLIGHT_REWRITE_PROMPT.lower()
+    assert "offer" in PT.SLIGHT_REWRITE_PROMPT
+    assert "numbers" in PT.SLIGHT_REWRITE_PROMPT
+    assert "one short paragraph" in PT.SLIGHT_REWRITE_PROMPT.lower()
+    assert PT.SLIGHT_REWRITE_PROMPT != PT.REWRITE_PROMPT
+    # STRONG reuses the existing RUDE prompt.
+    assert PT.STRONG_REWRITE_PROMPT == PT.REWRITE_PROMPT
+    assert PT.SLIGHT_STYLE == "SLIGHT"
+    assert PT.STRONG_STYLE == "STRONG"
+    assert PT.DOSE_LEVELS == ("slight", "strong")
+    assert PT.DEFAULT_LEVELS == ("rude", "polite")
+    assert PT.DOSE_PAIR_IDS == ("orig_slight", "orig_strong", "slight_strong")
+    assert PT.DOSE_PREDICTED == {"orig_slight": "orig",
+                                 "orig_strong": "orig",
+                                 "slight_strong": "slight"}
+    assert PT.VERDICT_GRADED == "graded"
+    assert PT.VERDICT_ORDINAL_FLAT == "ordinal but flat"
+    assert PT.VERDICT_NOT_GRADED == "not graded"
+    slight_msgs = PT.build_rewrite_messages("hello world test offer 5 deal",
+                                            "SLIGHT", "A")
+    assert slight_msgs[0]["content"] == PT.SLIGHT_REWRITE_PROMPT
+    assert "SLIGHT" in slight_msgs[1]["content"]
+    strong_msgs = PT.build_rewrite_messages("hello world test offer 5 deal",
+                                            "STRONG", "A")
+    assert strong_msgs[0]["content"] == PT.REWRITE_PROMPT
+    assert "RUDE" in strong_msgs[1]["content"]
+    assert "STRONG" in strong_msgs[1]["content"]
+
+
+def test_write_levels_normalize():
+    assert PT._normalize_levels(None) == ("rude", "polite")
+    assert PT._normalize_levels("slight,strong") == ("slight", "strong")
+    assert PT._normalize_levels(("slight", "strong")) == ("slight", "strong")
+    assert PT._normalize_levels("rude,polite") == ("rude", "polite")
+
+
+def test_write_levels_slight_strong(tmp_path):
+    targets = [{"dialogue": "casino-1", "turn": 2, "speaker": "A",
+                "text": "I offer five for your three, please consider it",
+                "z": 0.1}]
+    out = tmp_path / "out"
+    out.mkdir()
+    fake = _Queued(["slight rewrite here", "strong rewrite here"])
+    client = LoggingClient(fake, CallLog(out / "calls.jsonl"), "t")
+    variants = PT.write_variants(targets, out, client,
+                                 levels=("slight", "strong"))
+    assert len(variants) == 1
+    v = variants[0]
+    assert v["orig"] == targets[0]["text"]
+    assert v["slight"] == "slight rewrite here"
+    assert v["strong"] == "strong rewrite here"
+    assert "rude" not in v and "polite" not in v
+    stored = json.loads((out / "variants.json").read_text())
+    assert stored == variants
+    assert fake.calls[0][0]["content"] == PT.SLIGHT_REWRITE_PROMPT
+    assert fake.calls[1][0]["content"] == PT.REWRITE_PROMPT
+    calls = (out / "calls.jsonl").read_text().splitlines()
+    assert len(calls) == 2
+    metas = [json.loads(line)["meta"] for line in calls]
+    assert [m["style"] for m in metas] == ["SLIGHT", "STRONG"]
+    assert all(m["layer"] == "perturb-write" for m in metas)
+
+
+def test_write_levels_string_form(tmp_path):
+    targets = [{"dialogue": "casino-1", "turn": 2, "speaker": "A",
+                "text": "I offer five for your three, please consider it",
+                "z": 0.1}]
+    out = tmp_path / "out"
+    out.mkdir()
+    fake = _Queued(["a", "b"])
+    client = LoggingClient(fake, CallLog(out / "calls.jsonl"), "t")
+    variants = PT.write_variants(targets, out, client,
+                                 levels="slight,strong")
+    assert variants[0]["slight"] == "a"
+    assert variants[0]["strong"] == "b"
+
+
+def _dose_vote_fixture():
+    long = "this turn has more than enough words for context testing"
+    effects = [_eff(0, "A", 0.2, f"{long} zero"),
+               _eff(1, "B", -0.1, f"{long} one"),
+               _eff(2, "A", 0.3, f"{long} two target here")]
+    rec = _record("casino-1", effects)
+    variants = [{"dialogue": "casino-1", "turn": 2,
+                 "orig": "I offer five for three please",
+                 "slight": "I offer five for three",
+                 "strong": "Give me five for three now"}]
+    return variants, {"casino-1": rec}
+
+
+def test_vote_dose_pairs_follow_keys(tmp_path):
+    variants, records = _dose_vote_fixture()
+    out = tmp_path / "out"
+    out.mkdir()
+    client = LoggingClient(
+        _Fixed('{"better": "first", "why": "warmer"}'),
+        CallLog(out / "calls.jsonl"), "t")
+    run, _pres = PT.run_vote(variants, records, out, client, workers=2)
+    assert run["n_presentations"] == 6
+    assert run["n_expected"] == 18
+    assert run["n_votes"] == 18
+    lines = [json.loads(line) for line in
+             (out / "votes.jsonl").read_text().splitlines()]
+    assert len(lines) == 6
+    by_pair: dict[str, list] = {}
+    for line in lines:
+        assert line["pair"] in PT.DOSE_PAIR_IDS
+        by_pair.setdefault(line["pair"], []).append(line["first"])
+    assert set(by_pair) == set(PT.DOSE_PAIR_IDS)
+    for firsts in by_pair.values():
+        assert sorted(firsts) == ["a", "b"]
+    # Null dose variants are skipped.
+    variants_null = list(variants) + [{"dialogue": "casino-1", "turn": 1,
+                                       "orig": "x", "slight": None,
+                                       "strong": "y"}]
+    pres, info = PT.build_presentations(variants_null, records)
+    assert len(pres) == 6
+    assert all(p["turn"] == 2 for p in pres)
+    assert info["levels"] == ["slight", "strong"]
+
+
+def _dose_report_fixture(tmp_path, n_slight=15, n_orig_slight=15,
+                         n_orig_strong=20, n_total=20):
+    variants = []
+    for i in range(n_total):
+        did = f"casino-{i + 1}"
+        variants.append({"dialogue": did, "turn": 2,
+                         "orig": f"Original offer text for {did} with 5",
+                         "slight": f"Slight hardening for {did} numbers 5",
+                         "strong": f"Strong blunt refusal for {did} numbers 5"})
+    want = {"orig_slight": n_orig_slight, "orig_strong": n_orig_strong,
+            "slight_strong": n_slight}
+    lines = []
+    pid = 0
+    for i in range(n_total):
+        did = f"casino-{i + 1}"
+        for pair_id in PT.DOSE_PAIR_IDS:
+            a_var, b_var = PT.DOSE_CANONICAL[pair_id]
+            pred = PT.DOSE_PREDICTED[pair_id]
+            correct = i < want[pair_id]
+            winner = pred if correct else (
+                b_var if pred == a_var else a_var)
+            wab = "a" if winner == a_var else "b"
+            for first in ("a", "b"):
+                raw_vote = "first" if wab == first else "second"
+                lines.append({
+                    "id": pid, "dialogue": did, "turn": 2,
+                    "pair": pair_id, "a": a_var, "b": b_var,
+                    "first": first,
+                    "votes": {s: wab for s in
+                              ("neutral", "trusting", "suspicious")},
+                    "raw": {s: raw_vote for s in
+                            ("neutral", "trusting", "suspicious")},
+                })
+                pid += 1
+    var_p = tmp_path / "variants.json"
+    votes_p = tmp_path / "votes.jsonl"
+    var_p.write_text(json.dumps(variants))
+    votes_p.write_text("\n".join(json.dumps(line) for line in lines))
+    return var_p, votes_p
+
+
+def test_report_dose_graded(tmp_path):
+    var_p, votes_p = _dose_report_fixture(tmp_path, n_slight=15,
+                                          n_orig_slight=15,
+                                          n_orig_strong=20, n_total=20)
+    out_md = tmp_path / "report.md"
+    PT.main(["report", "--votes", str(votes_p), "--variants", str(var_p),
+             "--out", str(out_md)])
+    votes = [json.loads(line) for line in votes_p.read_text().splitlines()]
+    variants = json.loads(var_p.read_text())
+    m = PT.compute_report_metrics(votes, variants)
+    assert m["n_targets"] == 20
+    assert m["levels"] == ["slight", "strong"]
+    assert m["slight_gt_strong"] == 15
+    assert m["per_pair_correct"]["slight_strong"] == 15
+    assert m["mean_margin_orig_strong"] > m["mean_margin_orig_slight"]
+    assert m["mean_margin_orig_slight"] == pytest.approx(0.5)
+    assert m["mean_margin_orig_strong"] == pytest.approx(1.0)
+    assert m["verdict"] == "graded"
+    assert m["dose_verdict"] == "graded"
+    md = out_md.read_text()
+    assert "slight > strong: 15/20" in md
+    assert "mean_margin_orig_slight" in md
+    assert "mean_margin_orig_strong" in md
+    assert "verdict: graded" in md
+    assert "| dialogue | turn | orig | slight | strong |" in md
+    rows = [line for line in md.splitlines() if line.startswith("| casino-")]
+    assert len(rows) == 20
+
+
+def test_report_dose_ordinal_flat(tmp_path):
+    var_p, votes_p = _dose_report_fixture(tmp_path, n_slight=15,
+                                          n_orig_slight=15,
+                                          n_orig_strong=15, n_total=20)
+    votes = [json.loads(line) for line in votes_p.read_text().splitlines()]
+    variants = json.loads(var_p.read_text())
+    m = PT.compute_report_metrics(votes, variants)
+    assert m["slight_gt_strong"] == 15
+    assert m["mean_margin_orig_strong"] == pytest.approx(
+        m["mean_margin_orig_slight"])
+    assert m["verdict"] == "ordinal but flat"
+
+
+def test_report_dose_not_graded(tmp_path):
+    var_p, votes_p = _dose_report_fixture(tmp_path, n_slight=5,
+                                          n_orig_slight=15,
+                                          n_orig_strong=20, n_total=20)
+    votes = [json.loads(line) for line in votes_p.read_text().splitlines()]
+    variants = json.loads(var_p.read_text())
+    m = PT.compute_report_metrics(votes, variants)
+    assert m["slight_gt_strong"] == 5
+    assert m["verdict"] == "not graded"

@@ -37,6 +37,27 @@ REWRITE_PROMPT = (
 
 RUDE_STYLE = "RUDE"
 POLITE_STYLE = "POLITE"
+SLIGHT_STYLE = "SLIGHT"
+STRONG_STYLE = "STRONG"
+
+# Fixed SLIGHT rewrite prompt (Amendment 13, auditable exact wording):
+# one small hardening touch on the original, content kept.
+SLIGHT_REWRITE_PROMPT = (
+    "You rewrite a single dialogue turn with one small hardening touch.\n"
+    "Keep the propositional content exactly: the same offer, ask, numbers, "
+    "names and decisions.\n"
+    "Make exactly one small hardening edit to the interpersonal wording "
+    '(e.g. drop "please" or add "no offence"), nothing more.\n'
+    "Write one short paragraph, in the same language as the original.\n"
+    "Reply with the rewritten turn only, no quotes, no explanation."
+)
+SLIGHT_PROMPT = SLIGHT_REWRITE_PROMPT
+# STRONG reuses the existing RUDE prompt (same system prompt + RUDE wording).
+STRONG_REWRITE_PROMPT = REWRITE_PROMPT
+
+# Variant levels: default stays rude,polite; dose uses slight,strong.
+DEFAULT_LEVELS: tuple[str, str] = ("rude", "polite")
+DOSE_LEVELS: tuple[str, str] = ("slight", "strong")
 
 # Canonical perturb pairs and their predicted winners.
 PAIRS: tuple[tuple[str, str], ...] = (
@@ -45,20 +66,124 @@ PAIRS: tuple[tuple[str, str], ...] = (
     ("rude", "polite"),
 )
 PAIR_IDS = ("orig_rude", "orig_polite", "rude_polite")
+DOSE_PAIRS: tuple[tuple[str, str], ...] = (
+    ("orig", "slight"),
+    ("orig", "strong"),
+    ("slight", "strong"),
+)
+DOSE_PAIR_IDS = ("orig_slight", "orig_strong", "slight_strong")
+DOSE_CANONICAL: dict[str, tuple[str, str]] = {
+    "orig_slight": ("orig", "slight"),
+    "orig_strong": ("orig", "strong"),
+    "slight_strong": ("slight", "strong"),
+}
+DOSE_PREDICTED: dict[str, str] = {
+    "orig_slight": "orig",
+    "orig_strong": "orig",
+    "slight_strong": "slight",
+}
 CANONICAL: dict[str, tuple[str, str]] = {
     "orig_rude": ("orig", "rude"),
     "orig_polite": ("orig", "polite"),
     "rude_polite": ("rude", "polite"),
+    "orig_slight": ("orig", "slight"),
+    "orig_strong": ("orig", "strong"),
+    "slight_strong": ("slight", "strong"),
 }
 PREDICTED: dict[str, str] = {
     "orig_rude": "orig",
     "orig_polite": "polite",
     "rude_polite": "polite",
+    "orig_slight": "orig",
+    "orig_strong": "orig",
+    "slight_strong": "slight",
 }
 
 VERDICT_SENSITIVE = "directionally sensitive"
 VERDICT_INSENSITIVE = "insensitive at single-turn edits"
 VERDICT_INCONCLUSIVE = "inconclusive"
+VERDICT_GRADED = "graded"
+VERDICT_ORDINAL_FLAT = "ordinal but flat"
+VERDICT_NOT_GRADED = "not graded"
+
+
+def _normalize_levels(levels=None) -> tuple[str, str]:
+    """Normalize --levels to a (a, b) pair of variant keys (lowercase)."""
+    if levels is None:
+        return DEFAULT_LEVELS
+    if isinstance(levels, str):
+        parts = [p.strip().lower() for p in levels.split(",")]
+        parts = [p for p in parts if p]
+    else:
+        try:
+            parts = [str(p).strip().lower() for p in list(levels)]
+        except TypeError:
+            return DEFAULT_LEVELS
+        parts = [p for p in parts if p]
+    if len(parts) < 2:
+        return DEFAULT_LEVELS
+    return (parts[0], parts[1])
+
+
+_NON_VARIANT_KEYS = frozenset({
+    "dialogue", "turn", "orig", "text", "speaker", "z", "id",
+})
+
+
+def _detect_variant_levels(variants) -> tuple[str, str]:
+    """Detect (a, b) variant keys from stored variants (orig excluded)."""
+    seen: list[str] = []
+    try:
+        seq = list(variants or [])
+    except TypeError:
+        seq = []
+    for v in seq:
+        if not isinstance(v, dict):
+            continue
+        for k in v.keys():
+            if not isinstance(k, str):
+                continue
+            kl = k.strip().lower()
+            if not kl or kl in _NON_VARIANT_KEYS or kl == "orig":
+                continue
+            if kl not in seen:
+                seen.append(kl)
+    if "rude" in seen and "polite" in seen:
+        return ("rude", "polite")
+    if "slight" in seen and "strong" in seen:
+        return ("slight", "strong")
+    if len(seen) >= 2:
+        return (seen[0], seen[1])
+    return DEFAULT_LEVELS
+
+
+def _pair_ids_for_levels(a: str, b: str) -> tuple[str, str, str]:
+    return (f"orig_{a}", f"orig_{b}", f"{a}_{b}")
+
+
+def _canonical_for_levels(a: str, b: str) -> dict[str, tuple[str, str]]:
+    return {
+        f"orig_{a}": ("orig", a),
+        f"orig_{b}": ("orig", b),
+        f"{a}_{b}": (a, b),
+    }
+
+
+def _predicted_for_levels(a: str, b: str) -> dict[str, str]:
+    if (a, b) == ("rude", "polite"):
+        return {
+            "orig_rude": "orig",
+            "orig_polite": "polite",
+            "rude_polite": "polite",
+        }
+    if (a, b) == ("slight", "strong"):
+        return dict(DOSE_PREDICTED)
+    # Generic dose-style: orig beats both edits, milder edit beats stronger.
+    return {
+        f"orig_{a}": "orig",
+        f"orig_{b}": "orig",
+        f"{a}_{b}": a,
+    }
 
 
 # --- select ---------------------------------------------------------------
@@ -196,11 +321,22 @@ def parse_rewrite(raw) -> str | None:
 
 def build_rewrite_messages(text, style, speaker="") -> list[dict]:
     label = speaker if isinstance(speaker, str) and speaker else "TARGET"
-    user = (f"Style: {style}\n"
+    su = str(style).strip().upper() if isinstance(style, str) else ""
+    if su == SLIGHT_STYLE:
+        system = SLIGHT_REWRITE_PROMPT
+        style_label = SLIGHT_STYLE
+    elif su == STRONG_STYLE:
+        # STRONG reuses the existing RUDE prompt; keep both labels visible.
+        system = REWRITE_PROMPT
+        style_label = f"{RUDE_STYLE} ({STRONG_STYLE})"
+    else:
+        system = REWRITE_PROMPT
+        style_label = style
+    user = (f"Style: {style_label}\n"
             f"TARGET turn {label}: {text}\n"
             "Rewrite:")
     return [
-        {"role": "system", "content": REWRITE_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
@@ -222,8 +358,14 @@ def _rewrite_one(client, messages, model, meta):
 
 
 def write_variants(targets, out_dir, client, model=DEFAULT_MODEL,
-                   meter=None) -> list[dict]:
-    """Rewrite each target twice (RUDE, POLITE); failures become null."""
+                   meter=None, levels=None) -> list[dict]:
+    """Rewrite each target once per level; failures become null.
+
+    Default levels are ("rude", "polite"). Dose uses ("slight", "strong"):
+    SLIGHT gets one small hardening touch (SLIGHT_REWRITE_PROMPT), STRONG
+    reuses the existing RUDE prompt. Stored keys follow the levels.
+    """
+    a_level, b_level = _normalize_levels(levels)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     variants: list[dict] = []
@@ -236,35 +378,31 @@ def write_variants(targets, out_dir, client, model=DEFAULT_MODEL,
         speaker = t.get("speaker", "")
         text = t.get("text", t.get("orig", ""))
         text = text if isinstance(text, str) else str(text)
-        rude = polite = None
+        got: dict[str, str | None] = {a_level: None, b_level: None}
         try:
-            if meter is not None:
-                meter.check()
-            rude, _ = _rewrite_one(
-                client, build_rewrite_messages(text, RUDE_STYLE, speaker),
-                model, {"layer": "perturb-write", "item": did,
-                        "dialogue": did, "turn": turn,
-                        "style": RUDE_STYLE})
-            if meter is not None:
-                meter.check()
-            polite, _ = _rewrite_one(
-                client, build_rewrite_messages(text, POLITE_STYLE, speaker),
-                model, {"layer": "perturb-write", "item": did,
-                        "dialogue": did, "turn": turn,
-                        "style": POLITE_STYLE})
+            for lvl in (a_level, b_level):
+                if meter is not None:
+                    meter.check()
+                style = str(lvl).upper()
+                val, _ = _rewrite_one(
+                    client, build_rewrite_messages(text, style, speaker),
+                    model, {"layer": "perturb-write", "item": did,
+                            "dialogue": did, "turn": turn,
+                            "style": style})
+                got[lvl] = val
         except BudgetExceeded:
             variants.append({"dialogue": did, "turn": turn, "orig": text,
-                             "rude": rude, "polite": polite})
+                             a_level: got[a_level], b_level: got[b_level]})
             break
         variants.append({"dialogue": did, "turn": turn, "orig": text,
-                         "rude": rude, "polite": polite})
+                         a_level: got[a_level], b_level: got[b_level]})
     with open(out / "variants.json", "w", encoding="utf-8") as f:
         json.dump(variants, f, ensure_ascii=False, indent=2)
     return variants
 
 
 def write_from_file(targets_path, out_dir, client, model=DEFAULT_MODEL,
-                    meter=None) -> list[dict]:
+                    meter=None, levels=None) -> list[dict]:
     try:
         with open(targets_path, encoding="utf-8") as f:
             targets = json.load(f)
@@ -272,7 +410,8 @@ def write_from_file(targets_path, out_dir, client, model=DEFAULT_MODEL,
         raise SystemExit(f"cannot read targets {targets_path}: {exc}")
     if not isinstance(targets, list):
         raise SystemExit(f"bad targets {targets_path}: not a list")
-    return write_variants(targets, out_dir, client, model=model, meter=meter)
+    return write_variants(targets, out_dir, client, model=model,
+                          meter=meter, levels=levels)
 
 
 # --- vote -----------------------------------------------------------------
@@ -340,8 +479,13 @@ def _listener_map(pool) -> dict:
     return out
 
 
-def build_presentations(variants, records) -> tuple[list[dict], dict]:
-    """Six presentations per complete target (3 pairs x 2 orders)."""
+def build_presentations(variants, records, levels=None) -> tuple[list[dict], dict]:
+    """Six presentations per complete target (3 pairs x 2 orders).
+
+    Variant keys follow the stored variants: (orig,a), (orig,b), (a,b)
+    where (a,b) are the two level keys present (default rude,polite;
+    dose slight,strong). An explicit levels=(a,b) overrides detection.
+    """
     if isinstance(records, dict):
         rec_map = {k: v for k, v in records.items()
                    if isinstance(v, dict)}
@@ -352,6 +496,12 @@ def build_presentations(variants, records) -> tuple[list[dict], dict]:
                 rec_map[r["id"]] = r
     pool, contexts = PW.collect_pool(rec_map)
     listeners = _listener_map(pool)
+    if levels is None:
+        lvl_a, lvl_b = _detect_variant_levels(variants)
+    else:
+        lvl_a, lvl_b = _normalize_levels(levels)
+    pair_ids = _pair_ids_for_levels(lvl_a, lvl_b)
+    canonical = _canonical_for_levels(lvl_a, lvl_b)
     presentations: list[dict] = []
     pid = 0
     for v in variants or []:
@@ -361,12 +511,12 @@ def build_presentations(variants, records) -> tuple[list[dict], dict]:
         turn = v.get("turn", 0)
         turn = turn if isinstance(turn, int) else 0
         orig = v.get("orig", "")
-        rude = v.get("rude")
-        polite = v.get("polite")
-        if rude is None or polite is None:
+        va = v.get(lvl_a)
+        vb = v.get(lvl_b)
+        if va is None or vb is None:
             continue
-        if not isinstance(orig, str) or not isinstance(rude, str) \
-                or not isinstance(polite, str):
+        if not isinstance(orig, str) or not isinstance(va, str) \
+                or not isinstance(vb, str):
             continue
         ctx = contexts.get(did)
         if not isinstance(ctx, dict):
@@ -386,9 +536,9 @@ def build_presentations(variants, records) -> tuple[list[dict], dict]:
                       if s != speaker and s != "unknown"]
             listener = others[0] if others else "listener"
         context_lines = PW.snippet_lines(turns, pos, PW.WINDOW)
-        texts = {"orig": orig, "rude": rude, "polite": polite}
-        for pair_id in PAIR_IDS:
-            a_var, b_var = CANONICAL[pair_id]
+        texts = {"orig": orig, lvl_a: va, lvl_b: vb}
+        for pair_id in pair_ids:
+            a_var, b_var = canonical[pair_id]
             for first in ("a", "b"):
                 first_var = a_var if first == "a" else b_var
                 second_var = b_var if first == "a" else a_var
@@ -409,7 +559,9 @@ def build_presentations(variants, records) -> tuple[list[dict], dict]:
                 pid += 1
     # Strip judging-only helpers before returning? Keep them: the writer
     # below persists only the stable schema.
-    return presentations, {"n_variants": len(variants or [])}
+    return presentations, {"n_variants": len(variants or []),
+                           "levels": [lvl_a, lvl_b],
+                           "pair_ids": list(pair_ids)}
 
 
 def judge_presentations(client, presentations, model=DEFAULT_MODEL,
@@ -542,8 +694,10 @@ def write_vote_outputs(out_dir, presentations, raw_votes, stats, settings,
 
 def run_vote(variants, records, out_dir, client, model=DEFAULT_MODEL,
              workers=10, meter=None, seed=0, settings=None,
-             spend=None, cost=0.0, run_id="", commit="unknown"):
-    presentations, _info = build_presentations(variants, records)
+             spend=None, cost=0.0, run_id="", commit="unknown",
+             levels=None):
+    presentations, _info = build_presentations(variants, records,
+                                               levels=levels)
     raw, stats = judge_presentations(client, presentations, model=model,
                                      workers=workers, meter=meter)
     base = {"seed": seed, "model": model}
@@ -614,6 +768,34 @@ def majority_for_pair(votes_ab, predicted):
     return "tie", float((n_pred - n_opp) / total)
 
 
+def _detect_levels_from_votes(votes) -> tuple[str, str] | None:
+    pairs: set[str] = set()
+    for line in votes or []:
+        if isinstance(line, dict) and isinstance(line.get("pair"), str):
+            pairs.add(line["pair"])
+    if not pairs:
+        return None
+    if {"orig_slight", "orig_strong", "slight_strong"} & pairs:
+        return ("slight", "strong")
+    if {"orig_rude", "orig_polite", "rude_polite"} & pairs:
+        return ("rude", "polite")
+    # Generic: look for orig_X, orig_Y, X_Y.
+    orig_suffixes: list[str] = []
+    for p in sorted(pairs):
+        if p.startswith("orig_") and len(p) > 5:
+            suf = p[5:]
+            if suf and suf not in orig_suffixes:
+                orig_suffixes.append(suf)
+    if len(orig_suffixes) >= 2:
+        a, b = orig_suffixes[0], orig_suffixes[1]
+        if f"{a}_{b}" in pairs or f"{b}_{a}" in pairs:
+            if f"{a}_{b}" in pairs:
+                return (a, b)
+            return (b, a)
+        return (a, b)
+    return None
+
+
 def compute_report_metrics(votes, variants) -> dict:
     var_map: dict[tuple, dict] = {}
     order: list[tuple] = []
@@ -624,6 +806,30 @@ def compute_report_metrics(votes, variants) -> dict:
         if key not in var_map:
             order.append(key)
         var_map[key] = v
+    # Levels follow the stored variants; fall back to vote pair ids.
+    lvl_a, lvl_b = _detect_variant_levels(variants)
+    has_variant_dicts = any(isinstance(v, dict) for v in (variants or []))
+    if not has_variant_dicts:
+        from_votes = _detect_levels_from_votes(votes)
+        if from_votes is not None:
+            lvl_a, lvl_b = from_votes
+    else:
+        # If variants look default but votes are clearly dose (or vice
+        # versa), trust the votes: they are what is being scored.
+        from_votes = _detect_levels_from_votes(votes)
+        if from_votes is not None and from_votes != (lvl_a, lvl_b):
+            # Only override when variants carry no usable level keys.
+            seen_levels = set()
+            for v in (variants or []):
+                if isinstance(v, dict):
+                    for k in (lvl_a, lvl_b):
+                        if k in v:
+                            seen_levels.add(k)
+            if len(seen_levels) < 2:
+                lvl_a, lvl_b = from_votes
+    pair_ids = _pair_ids_for_levels(lvl_a, lvl_b)
+    canonical = _canonical_for_levels(lvl_a, lvl_b)
+    predicted = _predicted_for_levels(lvl_a, lvl_b)
     # Group derandomized a/b/tie votes per (target, pair).
     grouped: dict[tuple, dict[str, list]] = {}
     n_first = n_second = 0
@@ -632,9 +838,9 @@ def compute_report_metrics(votes, variants) -> dict:
             continue
         key = (line.get("dialogue"), line.get("turn"))
         pair = line.get("pair")
-        if pair not in CANONICAL:
+        if pair not in canonical:
             continue
-        bucket = grouped.setdefault(key, {pid: [] for pid in PAIR_IDS})
+        bucket = grouped.setdefault(key, {pid: [] for pid in pair_ids})
         votes_d = line.get("votes", {})
         raw_d = line.get("raw", {})
         if isinstance(votes_d, dict):
@@ -661,27 +867,29 @@ def compute_report_metrics(votes, variants) -> dict:
     # when variants carry nulls; fall back to vote keys when empty.
     targets = [k for k in order
                if isinstance(var_map.get(k), dict)
-               and var_map[k].get("rude") is not None
-               and var_map[k].get("polite") is not None]
+               and var_map[k].get(lvl_a) is not None
+               and var_map[k].get(lvl_b) is not None]
     if not targets:
         targets = sorted(grouped.keys(),
                          key=lambda k: (str(k[0]), k[1]
                                        if isinstance(k[1], int) else 0))
-    per_pair_correct = {pid: 0 for pid in PAIR_IDS}
+    per_pair_correct = {pid: 0 for pid in pair_ids}
     margins: list[float] = []
+    margins_by_pair: dict[str, list[float]] = {pid: [] for pid in pair_ids}
     ordering_correct = 0
     details: dict[tuple, dict] = {}
     for key in targets:
-        bucket = grouped.get(key, {pid: [] for pid in PAIR_IDS})
+        bucket = grouped.get(key, {pid: [] for pid in pair_ids})
         outcomes: dict[str, str] = {}
         ok_all = True
-        for pid in PAIR_IDS:
-            a_var, b_var = CANONICAL[pid]
-            pred_var = PREDICTED[pid]
+        for pid in pair_ids:
+            a_var, b_var = canonical[pid]
+            pred_var = predicted[pid]
             pred_ab = "a" if pred_var == a_var else "b"
             winner_ab, margin = majority_for_pair(bucket.get(pid, []),
                                                   pred_ab)
             margins.append(float(margin))
+            margins_by_pair[pid].append(float(margin))
             if winner_ab == "tie":
                 outcomes[pid] = "tie"
                 ok_all = False
@@ -698,32 +906,67 @@ def compute_report_metrics(votes, variants) -> dict:
     n_targets = len(targets)
     ordering_accuracy = (ordering_correct / n_targets) if n_targets else 0.0
     mean_margin = (sum(margins) / len(margins)) if margins else 0.0
+    mean_margins = {pid: (sum(vals) / len(vals) if vals else 0.0)
+                    for pid, vals in margins_by_pair.items()}
     denom = n_first + n_second
     position_bias = (n_first / denom) if denom else 0.0
+    out: dict = {
+        "n_targets": int(n_targets),
+        "ordering_correct": int(ordering_correct),
+        "ordering_accuracy": float(ordering_accuracy),
+        "per_pair_correct": {pid: int(per_pair_correct[pid])
+                             for pid in pair_ids},
+        "mean_margin": float(mean_margin),
+        "mean_margins": {pid: float(mean_margins[pid]) for pid in pair_ids},
+        "position_bias": float(position_bias),
+        "n_first": int(n_first),
+        "n_second": int(n_second),
+        "targets": list(targets),
+        "details": {f"{k[0]}:{k[1]}": v for k, v in details.items()},
+        "levels": [lvl_a, lvl_b],
+        "pair_ids": list(pair_ids),
+    }
+    if (lvl_a, lvl_b) == ("slight", "strong"):
+        # Amendment 13: (a) slight > strong on majority in >=14/20,
+        # (b) mean margin(orig vs strong) > mean margin(orig vs slight).
+        n_gt = int(per_pair_correct.get("slight_strong", 0) or 0)
+        mm_slight = float(mean_margins.get("orig_slight", 0.0) or 0.0)
+        mm_strong = float(mean_margins.get("orig_strong", 0.0) or 0.0)
+        need = 0.70 * n_targets
+        cond_a = n_gt >= need
+        cond_b = mm_strong > mm_slight
+        if cond_a and cond_b:
+            dose_verdict = VERDICT_GRADED
+        elif cond_a:
+            dose_verdict = VERDICT_ORDINAL_FLAT
+        else:
+            dose_verdict = VERDICT_NOT_GRADED
+        out.update({
+            "verdict": dose_verdict,
+            "dose_verdict": dose_verdict,
+            "slight_gt_strong": int(n_gt),
+            "slight_gt_strong_correct": int(n_gt),
+            "n_slight_gt_strong": int(n_gt),
+            "mean_margin_orig_slight": float(mm_slight),
+            "mean_margin_orig_strong": float(mm_strong),
+            "mean_margin_slight_strong": float(
+                mean_margins.get("slight_strong", 0.0) or 0.0),
+            "dose_cond_a": bool(cond_a),
+            "dose_cond_b": bool(cond_b),
+        })
+        return out
     # Pre-stated rule: ordering >= 0.80 and each pair >= 16/20. For fixtures
     # with n != 20 the pair bar scales to the same 0.80 share.
     need_pair = 0.80 * n_targets
     if ordering_accuracy >= 0.80 and all(
-            per_pair_correct[pid] >= need_pair for pid in PAIR_IDS):
+            per_pair_correct[pid] >= need_pair for pid in pair_ids):
         verdict = VERDICT_SENSITIVE
     elif ordering_accuracy < 0.60:
         verdict = VERDICT_INSENSITIVE
     else:
         verdict = VERDICT_INCONCLUSIVE
-    return {
-        "n_targets": int(n_targets),
-        "ordering_correct": int(ordering_correct),
-        "ordering_accuracy": float(ordering_accuracy),
-        "per_pair_correct": {pid: int(per_pair_correct[pid])
-                             for pid in PAIR_IDS},
-        "mean_margin": float(mean_margin),
-        "position_bias": float(position_bias),
-        "n_first": int(n_first),
-        "n_second": int(n_second),
-        "verdict": verdict,
-        "targets": list(targets),
-        "details": {f"{k[0]}:{k[1]}": v for k, v in details.items()},
-    }
+    out["verdict"] = verdict
+    return out
 
 
 def _cell(text, limit=120) -> str:
@@ -747,20 +990,94 @@ def write_report_markdown(out_path, metrics, variants) -> dict:
     pbias = float(m.get("position_bias", 0.0) or 0.0)
     verdict = m.get("verdict", "")
     details = m.get("details", {}) or {}
+    # Detect levels: prefer metrics, fall back to variants.
+    lvl_a = lvl_b = None
+    lv = m.get("levels")
+    if isinstance(lv, (list, tuple)) and len(lv) == 2 \
+            and all(isinstance(x, str) for x in lv):
+        lvl_a, lvl_b = str(lv[0]).lower(), str(lv[1]).lower()
+    else:
+        per_keys = set(per.keys()) if isinstance(per, dict) else set()
+        if per_keys & set(DOSE_PAIR_IDS):
+            lvl_a, lvl_b = ("slight", "strong")
+        elif per_keys & set(PAIR_IDS):
+            lvl_a, lvl_b = ("rude", "polite")
+        else:
+            lvl_a, lvl_b = _detect_variant_levels(variants)
+    if (lvl_a, lvl_b) not in (("rude", "polite"), ("slight", "strong")):
+        # Generic levels: still render per-pair lines + table.
+        pair_ids = _pair_ids_for_levels(lvl_a, lvl_b)
+    elif (lvl_a, lvl_b) == ("slight", "strong"):
+        pair_ids = list(DOSE_PAIR_IDS)
+    else:
+        pair_ids = list(PAIR_IDS)
     lines: list[str] = []
-    lines.append("# Perturbation report (single-turn edits)")
-    lines.append("")
-    lines.append(f"n_targets={n} ordering_accuracy={acc:.3f} "
-                 f"({int(m.get('ordering_correct', 0) or 0)}/{n})")
-    for pid in PAIR_IDS:
-        lines.append(f"{pid}: {int(per.get(pid, 0) or 0)}/{n} predicted")
-    lines.append(f"mean_margin={margin:+.3f} position_bias={pbias:.3f} "
-                 f"(share first among non-tie)")
-    lines.append(f"verdict: {verdict}")
-    lines.append("")
-    lines.append("| dialogue | turn | orig | rude | polite | "
-                 "orig vs rude | orig vs polite | rude vs polite |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    if (lvl_a, lvl_b) == ("slight", "strong"):
+        n_gt = int(m.get("slight_gt_strong",
+                         per.get("slight_strong", 0) or 0) or 0)
+        mm_slight = float(m.get("mean_margin_orig_slight", 0.0) or 0.0)
+        # Backfill from mean_margins when the flat keys are absent.
+        mm_map = m.get("mean_margins", {}) or {}
+        if "mean_margin_orig_slight" not in m and isinstance(mm_map, dict):
+            try:
+                mm_slight = float(mm_map.get("orig_slight", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+        mm_strong = float(m.get("mean_margin_orig_strong", 0.0) or 0.0)
+        if "mean_margin_orig_strong" not in m and isinstance(mm_map, dict):
+            try:
+                mm_strong = float(mm_map.get("orig_strong", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+        lines.append("# Perturbation dose-response report "
+                     "(single-turn edits, Amendment 13)")
+        lines.append("")
+        lines.append(f"n_targets={n} ordering_accuracy={acc:.3f} "
+                     f"({int(m.get('ordering_correct', 0) or 0)}/{n})")
+        lines.append(f"slight > strong: {n_gt}/{n}")
+        for pid in pair_ids:
+            lines.append(f"{pid}: {int(per.get(pid, 0) or 0)}/{n} predicted")
+        lines.append(f"mean_margin_orig_slight={mm_slight:+.3f} "
+                     f"mean_margin_orig_strong={mm_strong:+.3f}")
+        lines.append(f"mean_margin={margin:+.3f} "
+                     f"position_bias={pbias:.3f} "
+                     f"(share first among non-tie)")
+        lines.append(f"verdict: {verdict}")
+        lines.append("")
+        lines.append("| dialogue | turn | orig | slight | strong | "
+                     "orig vs slight | orig vs strong | slight vs strong |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+    elif (lvl_a, lvl_b) == ("rude", "polite"):
+        lines.append("# Perturbation report (single-turn edits)")
+        lines.append("")
+        lines.append(f"n_targets={n} ordering_accuracy={acc:.3f} "
+                     f"({int(m.get('ordering_correct', 0) or 0)}/{n})")
+        for pid in PAIR_IDS:
+            lines.append(f"{pid}: {int(per.get(pid, 0) or 0)}/{n} predicted")
+        lines.append(f"mean_margin={margin:+.3f} position_bias={pbias:.3f} "
+                     f"(share first among non-tie)")
+        lines.append(f"verdict: {verdict}")
+        lines.append("")
+        lines.append("| dialogue | turn | orig | rude | polite | "
+                     "orig vs rude | orig vs polite | rude vs polite |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+    else:
+        lines.append("# Perturbation report (single-turn edits)")
+        lines.append("")
+        lines.append(f"n_targets={n} ordering_accuracy={acc:.3f} "
+                     f"({int(m.get('ordering_correct', 0) or 0)}/{n})")
+        lines.append(f"{lvl_a} > {lvl_b}: "
+                     f"{int(per.get(pair_ids[2], 0) or 0)}/{n}")
+        for pid in pair_ids:
+            lines.append(f"{pid}: {int(per.get(pid, 0) or 0)}/{n} predicted")
+        lines.append(f"mean_margin={margin:+.3f} position_bias={pbias:.3f} "
+                     f"(share first among non-tie)")
+        lines.append(f"verdict: {verdict}")
+        lines.append("")
+        lines.append(f"| dialogue | turn | orig | {lvl_a} | {lvl_b} | "
+                     f"orig vs {lvl_a} | orig vs {lvl_b} | "
+                     f"{lvl_a} vs {lvl_b} |")
+        lines.append("|---|---|---|---|---|---|---|---|")
     targets = m.get("targets", []) or []
     # JSON round-trips turn tuples to lists; accept both.
     norm_targets: list[tuple] = []
@@ -775,14 +1092,33 @@ def write_report_markdown(out_path, metrics, variants) -> dict:
         v = var_map.get(key, {})
         dkey = f"{key[0]}:{key[1]}"
         det = details.get(dkey, {}) if isinstance(details, dict) else {}
-        lines.append(
-            f"| {_cell(key[0])} | {key[1]} "
-            f"| {_cell(v.get('orig', ''))} "
-            f"| {_cell(v.get('rude', ''))} "
-            f"| {_cell(v.get('polite', ''))} "
-            f"| {_cell(det.get('orig_rude', ''), 20)} "
-            f"| {_cell(det.get('orig_polite', ''), 20)} "
-            f"| {_cell(det.get('rude_polite', ''), 20)} |")
+        if (lvl_a, lvl_b) == ("slight", "strong"):
+            lines.append(
+                f"| {_cell(key[0])} | {key[1]} "
+                f"| {_cell(v.get('orig', ''))} "
+                f"| {_cell(v.get('slight', ''))} "
+                f"| {_cell(v.get('strong', ''))} "
+                f"| {_cell(det.get('orig_slight', ''), 20)} "
+                f"| {_cell(det.get('orig_strong', ''), 20)} "
+                f"| {_cell(det.get('slight_strong', ''), 20)} |")
+        elif (lvl_a, lvl_b) == ("rude", "polite"):
+            lines.append(
+                f"| {_cell(key[0])} | {key[1]} "
+                f"| {_cell(v.get('orig', ''))} "
+                f"| {_cell(v.get('rude', ''))} "
+                f"| {_cell(v.get('polite', ''))} "
+                f"| {_cell(det.get('orig_rude', ''), 20)} "
+                f"| {_cell(det.get('orig_polite', ''), 20)} "
+                f"| {_cell(det.get('rude_polite', ''), 20)} |")
+        else:
+            lines.append(
+                f"| {_cell(key[0])} | {key[1]} "
+                f"| {_cell(v.get('orig', ''))} "
+                f"| {_cell(v.get(lvl_a, ''))} "
+                f"| {_cell(v.get(lvl_b, ''))} "
+                f"| {_cell(det.get(pair_ids[0], ''), 20)} "
+                f"| {_cell(det.get(pair_ids[1], ''), 20)} "
+                f"| {_cell(det.get(pair_ids[2], ''), 20)} |")
     lines.append("")
     out_p = Path(out_path)
     if str(out_p.parent) and str(out_p.parent) != ".":
@@ -830,6 +1166,7 @@ def main(argv=None) -> None:
     wp.add_argument("--effort", default="low")
     wp.add_argument("--budget", type=float, default=0.5)
     wp.add_argument("--workers", type=int, default=10)
+    wp.add_argument("--levels", default="rude,polite")
 
     vp = sub.add_parser("vote")
     vp.add_argument("--variants", required=True)
@@ -865,12 +1202,13 @@ def main(argv=None) -> None:
                 targets = json.load(f)
         except (OSError, json.JSONDecodeError) as exc:
             raise SystemExit(f"cannot read targets {args.targets}: {exc}")
+        lvl_a, lvl_b = _normalize_levels(getattr(args, "levels", None))
         variants = write_variants(targets, out, client, model=args.model,
-                                  meter=meter)
+                                  meter=meter, levels=(lvl_a, lvl_b))
         n_null = sum(1 for v in variants
-                     if v.get("rude") is None or v.get("polite") is None)
+                     if v.get(lvl_a) is None or v.get(lvl_b) is None)
         print(f"done variants {len(variants)} null_targets={n_null} "
-              f"spend: ${meter.cost():.4f}")
+              f"levels={lvl_a},{lvl_b} spend: ${meter.cost():.4f}")
         return
     if args.cmd == "vote":
         out = Path(args.out)
@@ -915,6 +1253,15 @@ def main(argv=None) -> None:
               f"spend: ${run['cost']:.4f}")
         return
     metrics = generate_report(args.votes, args.variants, args.out)
+    if "slight_gt_strong" in metrics:
+        print(f"done slight_gt_strong={metrics['slight_gt_strong']}/"
+              f"{metrics['n_targets']} "
+              f"mean_margin_orig_slight="
+              f"{metrics['mean_margin_orig_slight']:+.3f} "
+              f"mean_margin_orig_strong="
+              f"{metrics['mean_margin_orig_strong']:+.3f} "
+              f"verdict={metrics['verdict']} out={args.out}")
+        return
     print(f"done ordering={metrics['ordering_accuracy']:.3f} "
           f"({metrics['ordering_correct']}/{metrics['n_targets']}) "
           f"verdict={metrics['verdict']} out={args.out}")
