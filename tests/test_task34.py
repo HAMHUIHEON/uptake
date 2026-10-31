@@ -405,3 +405,118 @@ def test_board_cost_pairwise(tmp_path):
     assert both["calls"] == 2
     board_only = SC.board_cost(str(p), None, layers=("board",))
     assert board_only["calls"] == 0
+
+
+# --- task56: --ids-file and --stances 5 ---
+
+def test_ids_file_filters_pool(tmp_path):
+    src = _write_src(tmp_path, _src3())
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("casino-2\n\n  \nmissing-id\n")
+    ids = P._read_ids_file(str(ids_file))
+    assert ids == ["casino-2", "missing-id"]
+    loaded = SC.load_dir(src, ids=ids)
+    assert set(loaded) == {"casino-2"}
+    pool, contexts = P.collect_pool(loaded)
+    assert pool
+    assert all(e["dialogue"] == "casino-2" for e in pool)
+    assert set(contexts) == {"casino-2"}
+    assert P.STANCES == ("neutral", "trusting", "suspicious")
+
+
+def test_run_cli_ids_file(tmp_path, monkeypatch):
+    src = _write_src(tmp_path, _src3())
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("casino-1\ncasino-3\n")
+    out = tmp_path / "out"
+
+    class _FakeMuse:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, messages, model=None, temperature=1.0,
+                     reasoning_effort=None, response_format=None):
+            return '{"better": "tie", "why": "x"}'
+
+    monkeypatch.setattr(P, "MuseClient", _FakeMuse)
+    P.main(["run", "--src", str(src), "--out", str(out), "--k", "1",
+            "--seed", "0", "--ids-file", str(ids_file), "--budget", "10",
+            "--workers", "2"])
+    run = json.loads((out / "run.json").read_text())
+    assert run["settings"]["ids_file"] == str(ids_file)
+    assert run["settings"]["n_dialogues"] == 2
+    assert run["settings"]["stances"] == 3
+    pairs = [json.loads(line) for line in
+             (out / "pairs.jsonl").read_text().splitlines()]
+    assert pairs
+    for p in pairs:
+        assert p["a"]["dialogue"] in ("casino-1", "casino-3")
+        assert p["b"]["dialogue"] in ("casino-1", "casino-3")
+    assert run["n_expected"] == len(pairs) * 3
+
+
+def test_stances5_judge_all_five_votes(tmp_path):
+    assert P.STANCES == ("neutral", "trusting", "suspicious")
+    assert P.STANCES5 == ("neutral", "trusting", "suspicious",
+                          "tired", "impatient")
+    records = _src3()
+    pool, contexts = P.collect_pool(records)
+    pairs = P.make_pairs(pool, k=1, seed=0)
+    assert pairs
+    panel5 = P.pairwise_panel(0, 5)
+    assert [r.stance for r in panel5] == list(P.STANCES5)
+    msgs = P.build_pair_messages(pairs[0], contexts, panel5[3])
+    assert "stance: tired" in msgs[0]["content"]
+    msgs2 = P.build_pair_messages(pairs[0], contexts, panel5[4])
+    assert "stance: impatient" in msgs2[0]["content"]
+    raw, stats = P.judge_all(_Fixed('{"better": "second", "why": "ok"}'),
+                             pairs, contexts, workers=2, stances=5)
+    assert stats["n_attempted_votes"] == len(pairs) * 5
+    for per in raw.values():
+        assert set(per) == set(P.STANCES5)
+        assert all(v == "second" for v in per.values())
+    run = P.write_run_outputs(tmp_path, pairs, raw, stats, {"seed": 0},
+                              {}, 0.0, stances=5)
+    assert run["n_expected"] == len(pairs) * 5
+    assert run["n_votes"] == len(pairs) * 5
+    stored = [json.loads(line) for line in
+              (tmp_path / "pairs.jsonl").read_text().splitlines()]
+    for line in stored:
+        assert set(line["votes"]) == set(P.STANCES5)
+        assert set(line["raw"]) == set(P.STANCES5)
+    rows = P.pair_votes(stored)
+    assert len(rows) == len(pairs) * 5
+    ratings, _ = P.fit_bradley_terry(rows)
+    assert ratings
+    rel = P.split_half_reliability(stored, half_seed=1)
+    assert "rho" in rel
+
+
+def test_run_cli_stances5(tmp_path, monkeypatch):
+    src = _write_src(tmp_path, _src3())
+    out = tmp_path / "out5"
+
+    class _FakeMuse:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, messages, model=None, temperature=1.0,
+                     reasoning_effort=None, response_format=None):
+            return '{"better": "first", "why": "ok"}'
+
+    monkeypatch.setattr(P, "MuseClient", _FakeMuse)
+    P.main(["run", "--src", str(src), "--out", str(out), "--k", "1",
+            "--seed", "0", "--stances", "5", "--budget", "10",
+            "--workers", "2"])
+    run = json.loads((out / "run.json").read_text())
+    assert run["settings"]["stances"] == 5
+    assert run["n_expected"] == run["n_pairs"] * 5
+    assert run["n_attempted_votes"] == run["n_pairs"] * 5
+    assert run["n_votes"] == run["n_pairs"] * 5
+    stored = [json.loads(line) for line in
+              (out / "pairs.jsonl").read_text().splitlines()]
+    assert stored
+    for line in stored:
+        assert set(line["votes"]) == set(P.STANCES5)
+    calls = (out / "calls.jsonl").read_text().splitlines()
+    assert len(calls) == run["n_pairs"] * 5

@@ -23,18 +23,97 @@ from .types import Receiver
 from .usage import BudgetExceeded, Meter
 
 STANCES = ("neutral", "trusting", "suspicious")
+# task56 (Amendment 14): 5-stance reader adds tired (wants it over) and
+# impatient (in a hurry / hurried) as fixed prompt constants.
+STANCE_TIRED = "tired"
+STANCE_IMPATIENT = "impatient"
+STANCES5 = ("neutral", "trusting", "suspicious", "tired", "impatient")
+STANCES_5 = STANCES5
+STANCES3 = STANCES
 WINDOW = 6
 VOTES = ("first", "second", "tie")
 
 
-def pairwise_panel(pair_id) -> list[Receiver]:
-    """The three board receiver stances for one pair (same personas as board)."""
+def _active_stances(stances=None, n_stances=None):
+    """Normalize a stances selector to a tuple of stance names."""
+    val = stances if stances is not None else n_stances
+    if val is None:
+        return STANCES
+    if isinstance(val, bool):
+        raise ValueError(f"bad stances: {val!r} (expected 3 or 5)")
+    if isinstance(val, int):
+        if val == 3:
+            return STANCES
+        if val == 5:
+            return STANCES5
+        raise ValueError(f"bad stances: {val!r} (expected 3 or 5)")
+    if isinstance(val, str):
+        s = val.strip()
+        if s == "3":
+            return STANCES
+        if s == "5":
+            return STANCES5
+        if "," in s:
+            parts = tuple(p.strip() for p in s.split(",") if p.strip())
+            if parts:
+                return parts
+            raise ValueError(f"bad stances: {val!r}")
+        if s in STANCES5:
+            return (s,)
+        raise ValueError(f"bad stances: {val!r} (expected 3 or 5)")
+    if isinstance(val, (list, tuple)):
+        tup = tuple(val)
+        if not tup:
+            return STANCES
+        return tup
+    raise ValueError(f"bad stances: {val!r} (expected 3 or 5)")
+
+
+def _read_ids_file(path):
+    """Dialogue ids from a file (one per line, stripped, skip blank)."""
+    ids = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            cid = line.strip()
+            if cid:
+                ids.append(cid)
+    return ids
+
+
+def pairwise_panel(pair_id, n_stances=3, stances=None) -> list[Receiver]:
+    """The board receiver stances for one pair (same personas as board)."""
+    active = _active_stances(stances=stances, n_stances=n_stances)
+    if tuple(active) == STANCES:
+        base = Receiver(
+            id=f"pair{pair_id}",
+            relationship="participant in this conversation",
+            power="equal", channel="conversation", state="",
+        )
+        return build_panel(base, 3, 0, DEFAULT_MIX)
     base = Receiver(
         id=f"pair{pair_id}",
         relationship="participant in this conversation",
         power="equal", channel="conversation", state="",
     )
-    return build_panel(base, 3, 0, DEFAULT_MIX)
+    out: list[Receiver] = []
+    for i, st in enumerate(active):
+        try:
+            out.append(Receiver(
+                id=f"{base.id}-{i}",
+                relationship=base.relationship,
+                power=base.power, channel=base.channel,
+                state=base.state, stance=st,
+            ))
+        except ValueError:
+            r = Receiver(
+                id=f"{base.id}-{i}",
+                relationship=base.relationship,
+                power=base.power, channel=base.channel,
+                state=base.state, stance="neutral",
+            )
+            r.stance = st
+            out.append(r)
+    return out
 
 
 def collect_pool(records) -> tuple[list[dict], dict]:
@@ -266,15 +345,16 @@ def _judge_one(client, pair, contexts, receiver, model, window):
 
 
 def judge_all(client, pairs, contexts, model=DEFAULT_MODEL, workers=10,
-              meter=None, window=WINDOW):
+              meter=None, window=WINDOW, stances=None, n_stances=None):
     """One call per (pair, stance); returns (raw_votes, stats).
 
     raw_votes[pair_id][stance] is "first"/"second"/"tie"/None. Stops cleanly
     when the meter is exhausted; unjudged votes stay None.
     """
+    active = _active_stances(stances=stances, n_stances=n_stances)
     by_id = {p["id"]: p for p in (pairs or []) if isinstance(p, dict)}
-    receivers = {pid: pairwise_panel(pid) for pid in by_id}
-    raw = {pid: {s: None for s in STANCES} for pid in by_id}
+    receivers = {pid: pairwise_panel(pid, stances=active) for pid in by_id}
+    raw = {pid: {s: None for s in active} for pid in by_id}
     stats = {"n_calls": 0, "n_attempted_votes": 0, "budget_stop": False}
     try:
         max_workers = int(workers)
@@ -283,7 +363,7 @@ def judge_all(client, pairs, contexts, model=DEFAULT_MODEL, workers=10,
     if max_workers < 1:
         max_workers = 1
     queue: deque[tuple] = deque(
-        (pid, stance) for pid in sorted(by_id) for stance in STANCES)
+        (pid, stance) for pid in sorted(by_id) for stance in active)
     in_flight: dict[cf.Future, tuple] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         while queue or in_flight:
@@ -297,7 +377,7 @@ def judge_all(client, pairs, contexts, model=DEFAULT_MODEL, workers=10,
                         stats["budget_stop"] = True
                         break
                 queue.popleft()
-                rec = receivers[pid][STANCES.index(stance)]
+                rec = receivers[pid][list(active).index(stance)]
                 fut = pool.submit(_judge_one, client, by_id[pid], contexts,
                                   rec, model, window)
                 in_flight[fut] = (pid, stance)
@@ -321,7 +401,9 @@ def judge_all(client, pairs, contexts, model=DEFAULT_MODEL, workers=10,
 
 
 def write_run_outputs(out_dir, pairs, raw_votes, stats, settings,
-                      spend, cost, run_id="", commit="unknown") -> dict:
+                      spend, cost, run_id="", commit="unknown",
+                      stances=None, n_stances=None) -> dict:
+    active = _active_stances(stances=stances, n_stances=n_stances)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     pairs = [p for p in (pairs or []) if isinstance(p, dict)]
@@ -332,7 +414,7 @@ def write_run_outputs(out_dir, pairs, raw_votes, stats, settings,
         got = raw_votes.get(pid, {}) if isinstance(raw_votes, dict) else {}
         votes: dict[str, str | None] = {}
         raw_out: dict[str, str | None] = {}
-        for stance in STANCES:
+        for stance in active:
             v = got.get(stance)
             v = v if v in VOTES else None
             raw_out[stance] = v
@@ -358,7 +440,7 @@ def write_run_outputs(out_dir, pairs, raw_votes, stats, settings,
         "settings": dict(settings or {}),
         "commit": commit,
         "n_pairs": len(lines),
-        "n_expected": len(lines) * len(STANCES),
+        "n_expected": len(lines) * len(active),
         "n_calls": int(stats.get("n_calls", 0) or 0),
         "n_attempted_votes": attempted,
         "n_votes": n_first + n_second + n_tie,
@@ -663,12 +745,14 @@ def main(argv=None) -> None:
     rp = sub.add_parser("run")
     rp.add_argument("--src", required=True)
     rp.add_argument("--out", required=True)
-    rp.add_argument("--k", type=int, default=4)
+    rp.add_argument("--k", type=int, default=8)
     rp.add_argument("--seed", type=int, default=0)
     rp.add_argument("--budget", type=float, default=1.5)
     rp.add_argument("--workers", type=int, default=10)
     rp.add_argument("--effort", default="low")
     rp.add_argument("--model", default=DEFAULT_MODEL)
+    rp.add_argument("--ids-file", default=None)
+    rp.add_argument("--stances", type=int, default=3, choices=[3, 5])
     fp = sub.add_parser("fit")
     fp.add_argument("--pairs", required=True)
     fp.add_argument("--src", required=True)
@@ -683,24 +767,35 @@ def main(argv=None) -> None:
         src = Path(args.src)
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
-        records = SC.load_dir(src)
+        ids = None
+        if args.ids_file:
+            try:
+                ids = _read_ids_file(args.ids_file)
+            except OSError:
+                ap.error(f"ids file not found: {args.ids_file}")
+        records = SC.load_dir(src, ids=ids) if ids is not None \
+            else SC.load_dir(src)
         pool, contexts = collect_pool(records)
         pairs = make_pairs(pool, k=args.k, seed=args.seed)
+        active = STANCES5 if args.stances == 5 else STANCES
         meter = Meter(budget_usd=args.budget)
         inner = MuseClient(meter=meter,
                            default_effort=_normalize_effort(args.effort))
         run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         client = LoggingClient(inner, CallLog(out / "calls.jsonl"), run_id)
         raw, stats = judge_all(client, pairs, contexts, model=args.model,
-                               workers=args.workers, meter=meter)
+                               workers=args.workers, meter=meter,
+                               stances=active)
         settings = {"src": args.src, "out": args.out, "k": args.k,
                     "seed": args.seed, "budget": args.budget,
                     "workers": args.workers, "effort": args.effort,
-                    "model": args.model, "n_dialogues": len(contexts),
+                    "model": args.model, "stances": args.stances,
+                    "ids_file": args.ids_file,
+                    "n_dialogues": len(contexts),
                     "n_turns": len(pool)}
         run = write_run_outputs(out, pairs, raw, stats, settings,
                                 meter.by_model(), meter.cost(), run_id,
-                                batch._git_commit())
+                                batch._git_commit(), stances=active)
         print(f"done pairs {run['n_pairs']} votes {run['n_votes']}/"
               f"{run['n_expected']} parse_fail={run['parse_fail_rate']:.3f} "
               f"pos_bias={run['position_bias_share']:.3f} "
