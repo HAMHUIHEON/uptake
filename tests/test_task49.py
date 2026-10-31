@@ -1,4 +1,4 @@
-"""Contract for SPEC_task49_game + SPEC_task49b_game_key (synthetic data only)."""
+"""Contract for SPEC_task49_game + SPEC_task49b_game_key + SPEC_task49c_game_direction (synthetic data only)."""
 import json
 import re
 from pathlib import Path
@@ -26,8 +26,9 @@ def _resid_norm(table, sd_resid=1.0):
 
 
 def _story_fixture():
-    # z_abs == value (zero table, mu=0/sd=1): 잘 / 보통 / 나쁘게 / 보통.
-    # |z| < 0.5 turns (1, 3) are context-only, so asked == 2.
+    # z_abs == value (zero table, mu=0/sd=1).
+    # standings (50 + 25·rel, half up): A 50→63, B 50→53, B 53→20, A 63→55.
+    # Δ = +13 / +3 / −33 / −8 → 오른다 / 그대로 / 내린다 / 내린다; all asked.
     effects = [
         _eff(0, "A", 1.2, rel=0.5, text="A opens warmly"),
         _eff(1, "B", -0.3, rel=0.1, text="B hedges a little"),
@@ -43,6 +44,37 @@ def _story_fixture():
     item = _item("casino-878", effects, moves)
     norm = _resid_norm({"propose": 0.0, "reject": 0.0, "counter": 0.0})
     return item, CM.comment(item, norm, None, k=3)
+
+
+def _skip_band_fixture():
+    # Δ per turn: 0 / 0 / +4 / +5 / +3 / +6.
+    # |Δ| in (3, 6) turns (2, 3) are context-only, so asked == 4.
+    effects = [
+        _eff(0, "A", 1.0, rel=0.0, text="A opens"),
+        _eff(1, "B", 1.0, rel=0.0, text="B replies"),
+        _eff(2, "A", 1.0, rel=0.16, text="A nudges"),
+        _eff(3, "B", 1.0, rel=0.2, text="B nudges"),
+        _eff(4, "A", 1.0, rel=0.28, text="A moves on"),
+        _eff(5, "B", 1.0, rel=0.44, text="B moves on"),
+    ]
+    moves = [{"turn_index": i, "speaker": s, "moves": ["propose"]}
+             for i, s in enumerate(["A", "B", "A", "B", "A", "B"])]
+    item = _item("skipband", effects, moves)
+    return item, CM.comment(item, _resid_norm({"propose": 0.0}), None, k=3)
+
+
+def _cold_fixture():
+    # all z_abs < 0, but standings swing both ways vs each speaker's previous.
+    effects = [
+        _eff(0, "A", -1.0, rel=-1.0, text="A cold open"),
+        _eff(1, "B", -0.5, rel=-0.1, text="B cold reply"),
+        _eff(2, "A", -0.8, rel=-0.2, text="A stays cold"),
+        _eff(3, "B", -1.2, rel=-1.0, text="B coldest"),
+    ]
+    moves = [{"turn_index": i, "speaker": s, "moves": ["propose"]}
+             for i, s in enumerate(["A", "B", "A", "B"])]
+    item = _item("cold-1", effects, moves)
+    return item, CM.comment(item, _resid_norm({"propose": 0.0}), None, k=3)
 
 
 def _run_main(tmp_path, item, com, extra=()):
@@ -63,8 +95,23 @@ def _data_of(html):
     return json.loads(m.group(1))
 
 
-def test_verdict_thresholds():
-    # task49b: absolute reception, ±0.75.
+def test_direction_thresholds():
+    # task49c: direction of the speaker's standing vs their previous one.
+    assert G.direction_verdict(13) == "오른다"
+    assert G.direction_verdict(6) == "오른다"
+    assert G.direction_verdict(5) == "그대로"
+    assert G.direction_verdict(3) == "그대로"
+    assert G.direction_verdict(0) == "그대로"
+    assert G.direction_verdict(-3) == "그대로"
+    assert G.direction_verdict(-5) == "그대로"
+    assert G.direction_verdict(-6) == "내린다"
+    assert G.direction_verdict(-33) == "내린다"
+    assert G.direction_verdict(None) == "그대로"
+    assert G.direction_verdict("x") == "그대로"
+
+
+def test_reader_verdict_absolute():
+    # task49b: the reason line still uses absolute reception, ±0.75.
     assert G.reader_verdict(1.2) == "잘"
     assert G.reader_verdict(0.75) == "잘"
     assert G.reader_verdict(0.74) == "보통"
@@ -84,10 +131,15 @@ def test_intro_and_three_buttons(tmp_path):
             "상대가 이 말을 어떻게 받아들일지 맞혀 보세요." in html)
     assert "해설자는 정의상 항상 맞습니다" in html
     assert '>시작</button>' in html
-    assert ">잘 받아들여짐</button>" in html
-    assert ">보통</button>" in html
-    assert ">나쁘게</button>" in html
-    assert 'data-guess="잘"' in html
+    assert ">오른다</button>" in html
+    assert ">그대로</button>" in html
+    assert ">내린다</button>" in html
+    assert 'data-guess="오른다"' in html
+    assert 'data-guess="그대로"' in html
+    assert 'data-guess="내린다"' in html
+    assert ">잘 받아들여짐</button>" not in html
+    assert ">나쁘게</button>" not in html
+    assert 'id="question"' in html
     assert "나 0 / 해설자 0" in html
     assert ('<meta name="viewport" '
             'content="width=device-width, initial-scale=1">') in html
@@ -95,52 +147,113 @@ def test_intro_and_three_buttons(tmp_path):
     assert "#0d1117" not in html
 
 
-def test_per_turn_data_with_verdict_and_score(tmp_path):
+def test_per_turn_data_with_direction_and_score(tmp_path):
     item, com = _story_fixture()
     html = _run_main(tmp_path, item, com)
     data = _data_of(html)
     assert data["total"] == 4
-    assert data["asked"] == 2
+    assert data["asked"] == 4
     assert [t["verdict"] for t in data["turns"]] == \
-        ["잘", "보통", "나쁘게", "보통"]
+        ["오른다", "그대로", "내린다", "내린다"]
     assert [t["asked"] for t in data["turns"]] == \
-        [True, False, True, False]
+        [True, True, True, True]
+    assert [t["delta"] for t in data["turns"]] == [13, 3, -33, -8]
     for t in data["turns"]:
         assert isinstance(t["z_abs"], float)
         assert isinstance(t["z_resid"], float)
         assert t["text"]
         assert "관계 점수" in t["score_line"] and "→" in t["score_line"]
         assert t["reason"]
+        assert t["question"] == (
+            f"이 말로 {t['display']}의 관계 점수가 "
+            f"오를까, 그대로일까, 내릴까?")
     assert [t["z_abs"] for t in data["turns"]] == \
         [1.2, -0.3, -1.5, 0.4]
-    assert data["turns"][0]["score_line"].startswith("A의 관계 점수 50 →")
+    assert data["turns"][0]["score_line"] == "A의 관계 점수 50 → 63 (오름)"
+    assert data["turns"][1]["score_line"] == "B의 관계 점수 50 → 53 (그대로)"
+    assert data["turns"][2]["score_line"] == "B의 관계 점수 53 → 20 (내림)"
+    assert data["turns"][3]["score_line"] == "A의 관계 점수 63 → 55 (내림)"
     assert "B의 관계 점수" in html
     assert "잔고" not in html
 
 
-def test_skip_rule_no_buttons(tmp_path):
-    item, com = _story_fixture()
+def test_skip_band_ambiguous(tmp_path):
+    item, com = _skip_band_fixture()
     html = _run_main(tmp_path, item, com)
     data = _data_of(html)
+    assert [t["delta"] for t in data["turns"]] == [0, 0, 4, 5, 3, 6]
+    assert [t["asked"] for t in data["turns"]] == \
+        [True, True, False, False, True, True]
+    assert data["asked"] == 4
+    # skipped turns still carry a key; the band edges stay asked.
+    assert [t["verdict"] for t in data["turns"]] == ["그대로"] * 5 + ["오른다"]
     skipped = [t for t in data["turns"] if not t["asked"]]
-    assert len(skipped) == 2
-    assert all(abs(t["z_abs"]) < 0.5 for t in skipped)
+    assert all(3 < abs(t["delta"]) < 6 for t in skipped)
     # skipped turns render as context: no guess buttons, auto-advance.
     assert "해설 없음" in html
     assert "if(!t.asked)" in html
     assert '$("guessbtns").hidden=true' in html
 
 
-def test_counter_counts_asked_only(tmp_path):
+def test_first_turn_baseline_50(tmp_path):
     item, com = _story_fixture()
     html = _run_main(tmp_path, item, com)
     data = _data_of(html)
-    assert data["asked"] == 2
+    seen = set()
+    for t in data["turns"]:
+        if t["speaker"] not in seen:
+            seen.add(t["speaker"])
+            assert t["score_before"] == 50
+            assert t["asked"] is True
+            assert t["delta"] == t["score_after"] - 50
+    assert seen == {"A", "B"}
+
+
+def test_first_turn_asked_despite_ambiguous_delta(tmp_path):
+    effects = [
+        _eff(0, "A", 1.0, rel=0.0, text="A opens"),
+        _eff(1, "B", 1.0, rel=0.16, text="B nudges"),  # Δ +4, first turn → asked
+    ]
+    moves = [{"turn_index": i, "speaker": s, "moves": ["propose"]}
+             for i, s in enumerate(["A", "B"])]
+    item = _item("first-ask", effects, moves)
+    com = CM.comment(item, _resid_norm({"propose": 0.0}), None, k=3)
+    html = _run_main(tmp_path, item, com)
+    data = _data_of(html)
+    assert [t["delta"] for t in data["turns"]] == [0, 4]
+    assert [t["asked"] for t in data["turns"]] == [True, True]
+
+
+def test_question_text_names_speaker(tmp_path):
+    item, com = _story_fixture()
+    html = _run_main(tmp_path, item, com)
+    data = _data_of(html)
+    for t in data["turns"]:
+        assert t["display"] in t["question"]
+        assert t["question"].endswith("오를까, 그대로일까, 내릴까?")
+    assert "오를까, 그대로일까, 내릴까?" in html
+    assert '$("question")' in html
+
+
+def test_cold_dialogue_keys_not_all_same(tmp_path):
+    item, com = _cold_fixture()
+    html = _run_main(tmp_path, item, com)
+    data = _data_of(html)
+    assert all(t["z_abs"] < 0 for t in data["turns"])
+    keys = [t["verdict"] for t in data["turns"]]
+    assert len(set(keys)) >= 2
+
+
+def test_counter_counts_asked_only(tmp_path):
+    item, com = _skip_band_fixture()
+    html = _run_main(tmp_path, item, com)
+    data = _data_of(html)
+    assert data["asked"] == 4
     assert "문제 " in html
     assert "askedTotal" in html
     assert '"문제 "+' in html
-    assert "2수 중" in html
-    assert "4수 중" not in html
+    assert "4수 중" in html
+    assert "6수 중" not in html
 
 
 def test_export_json_shape(tmp_path):
@@ -170,7 +283,7 @@ def test_disagreement_skip(tmp_path):
     com = CM.comment(item, _resid_norm({"propose": 0.0}), None, k=3)
     html = _run_main(tmp_path, item, com)
     data = _data_of(html)
-    # strong |z| everywhere, but the high-disagreement turn is skipped.
+    # flat standings (Δ == 0 everywhere), but the high-disagreement turn skips.
     assert [t["asked"] for t in data["turns"]] == \
         [True, True, True, False]
     assert data["asked"] == 3
@@ -199,10 +312,11 @@ def test_end_card_tide_outcome_share(tmp_path):
     assert V2.SPEAKER_COLORS[0] in html
     assert "실제 결과:" in html
     assert "A 50 →" in html and "B 50 →" in html
-    # hit rate over asked turns only, with the confident-only footnote
-    assert "자가 확신한 수만 출제했습니다" in html
+    # direction question footnote
+    assert "질문은 '직전보다 오르나 내리나'입니다" in html
+    assert "자가 확신한 수만 출제했습니다" not in html
     assert "나는 협상의 흐름을 " in html
-    assert "2수 중" in html
+    assert "4수 중" in html
     assert "수 맞혔다 — uptake" in html
     assert 'id="share"' in html and '>복사</button>' in html
     assert ">내 답 내보내기</button>" in html
@@ -216,6 +330,7 @@ def test_names_mapping(tmp_path):
                      extra=["--names", '{"A": "Alice", "B": "Bob"}'])
     data = _data_of(html)
     assert data["turns"][0]["score_line"].startswith("Alice의 관계 점수")
+    assert data["turns"][0]["question"].startswith("이 말로 Alice의 관계 점수가")
     assert "Bob의 관계 점수" in html
 
 

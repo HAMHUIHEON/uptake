@@ -1,10 +1,11 @@
 """Layer-3 "guess the next move" game page.
 
 Standalone page: the tide stays hidden while the player guesses, turn by
-turn, how each utterance was received; the end card reveals the full
-simplified tide (task48), the hit rate, the actual outcome, and a share
-text. Self-contained HTML, light theme, mobile-first, Korean UI, stdlib
-only. All game logic runs in page JS; no server.
+turn, whether the speaker's standing went up or down vs their previous
+standing; the end card reveals the full simplified tide (task48), the hit
+rate, the actual outcome, and a share text. Self-contained HTML, light
+theme, mobile-first, Korean UI, stdlib only. All game logic runs in page
+JS; no server.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import json
 import math
 from pathlib import Path
 
+from . import misread
 from .board2 import MOVE_KO, decisive_of, outcome_line, tide_svg
 from .commentary import mark_for, standing_round
 from .viewer2 import build_view2, tide_y
@@ -23,13 +25,16 @@ INTRO = ("두 사람이 캠핑 물품을 나누는 협상입니다. 발언을 �
 INTRO_NOTE = "해설자는 정의상 항상 맞습니다. 해설자와 겨뤄 보세요."
 
 GUESSES = (
-    ("잘", "잘 받아들여짐"),
-    ("보통", "보통"),
-    ("나쁘게", "나쁘게"),
+    ("오른다", "오른다"),
+    ("그대로", "그대로"),
+    ("내린다", "내린다"),
 )
 
-_KEY_Z = 0.75
-_ASK_Z = 0.5
+_DIR_NOUN = {"오른다": "오름", "그대로": "그대로", "내린다": "내림"}
+
+_DELTA_KEY = 6
+_SKIP_LO = 3
+_SKIP_HI = 6
 
 
 def reader_verdict(z_abs) -> str:
@@ -43,11 +48,47 @@ def reader_verdict(z_abs) -> str:
         return "보통"
     if not math.isfinite(zf):
         return "보통"
-    if zf >= _KEY_Z:
+    if zf >= 0.75:
         return "잘"
-    if zf <= -_KEY_Z:
+    if zf <= -0.75:
         return "나쁘게"
     return "보통"
+
+
+def direction_verdict(delta) -> str:
+    """Direction key from a standing change: >=+6 오른다, <=-6 내린다.
+
+    delta is standing_after - standing_before on the 0-100 scale (the same
+    integers shown in the score line); the speaker's first turn is vs 50.
+    """
+    try:
+        df = float(delta)
+    except (TypeError, ValueError):
+        return "그대로"
+    if not math.isfinite(df):
+        return "그대로"
+    if df >= _DELTA_KEY:
+        return "오른다"
+    if df <= -_DELTA_KEY:
+        return "내린다"
+    return "그대로"
+
+
+def _is_ambiguous(delta) -> bool:
+    """True when |delta| sits in the open (3, 6) band: too close to call."""
+    try:
+        df = float(delta)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(df):
+        return False
+    return _SKIP_LO < abs(df) < _SKIP_HI
+
+
+def question_for(display) -> str:
+    """Per-turn question line naming the speaker."""
+    name = display if isinstance(display, str) and display else "화자"
+    return f"이 말로 {name}의 관계 점수가 오를까, 그대로일까, 내릴까?"
 
 
 def _has_jongseong(name) -> bool:
@@ -189,7 +230,8 @@ def _outcome_text(view, outcomes) -> str:
     return base
 
 
-def build_game(item, commentary, names=None, outcomes=None) -> dict:
+def build_game(item, commentary, names=None, outcomes=None,
+               panel=None) -> dict:
     """Assemble the layer-3 game model from record + commentary JSON."""
     from . import board2 as _B2
 
@@ -212,7 +254,15 @@ def build_game(item, commentary, names=None, outcomes=None) -> dict:
              if isinstance(d, dict) and d.get("pos") is not None]
     dis_by_idx = _disagreements_by_index(item)
     p75 = _p75(list(dis_by_idx.values())) if dis_by_idx else None
+    panel_data = misread.load_panel(panel)
+    panel_mode = bool(panel_data)
+    read_by_idx: dict = {}
+    if panel_mode:
+        for _a in misread.analyze_panel(panel_data):
+            if _a["index"] not in read_by_idx:
+                read_by_idx[_a["index"]] = _a
     rows: list[dict] = []
+    seen: set = set()
     for pos, t in enumerate(turns_v):
         if not isinstance(t, dict):
             continue
@@ -242,7 +292,6 @@ def build_game(item, commentary, names=None, outcomes=None) -> dict:
                 zr_f = 0.0
             if not math.isfinite(zr_f):
                 zr_f = 0.0
-        verdict = reader_verdict(za_f)
         dis = dis_by_idx.get(idx)
         if dis is None and isinstance(idx, int) is False:
             dis = dis_by_idx.get(pos)
@@ -252,9 +301,6 @@ def build_game(item, commentary, names=None, outcomes=None) -> dict:
             dis_f = None
         if dis_f is not None and not math.isfinite(dis_f):
             dis_f = None
-        asked = abs(za_f) >= _ASK_Z
-        if asked and dis_f is not None and p75 is not None and dis_f > p75:
-            asked = False
         try:
             if (pos > 0 and pos - 1 < len(trail)
                     and isinstance(trail[pos - 1], dict)):
@@ -269,6 +315,49 @@ def build_game(item, commentary, names=None, outcomes=None) -> dict:
             before_v, after_v = 50.0, 50.0
         before_i = standing_round(before_v)
         after_i = standing_round(after_v)
+        delta = after_i - before_i
+        verdict = direction_verdict(delta)
+        noun = _DIR_NOUN.get(verdict, "그대로")
+        is_first = speaker not in seen
+        seen.add(speaker)
+        if is_first:
+            asked = True
+        else:
+            asked = not _is_ambiguous(delta)
+            if (asked and dis_f is not None and p75 is not None
+                    and dis_f > p75):
+                asked = False
+        abs_verdict = reader_verdict(za_f)
+        options: list = []
+        invited: list = []
+        key_in_invited = False
+        reveal = ""
+        row_misread = False
+        if panel_mode:
+            question = "상대는 이 말을 어떻게 받을까?"
+            a = None
+            if isinstance(idx, int) and not isinstance(idx, bool):
+                a = read_by_idx.get(idx)
+            if a is None:
+                a = read_by_idx.get(pos)
+            if a is not None and a.get("majority"):
+                key = a["majority"]
+                verdict = key
+                invited = list(a.get("invited") or [])
+                key_in_invited = key in invited
+                options = [{"value": v, "label": lb}
+                           for v, lb in misread.options_for(
+                               key, invited, a.get("dist"))]
+                reveal = misread.reveal_line(a, before_i, after_i)
+                row_misread = bool(a.get("misread"))
+                try:
+                    asked = float(a.get("share", 0.0)) >= 0.5
+                except (TypeError, ValueError):
+                    asked = False
+            else:
+                asked = False
+        else:
+            question = question_for(display)
         rows.append({
             "index": idx,
             "speaker": speaker,
@@ -281,9 +370,16 @@ def build_game(item, commentary, names=None, outcomes=None) -> dict:
             "disagreement": dis_f,
             "score_before": before_i,
             "score_after": after_i,
-            "score_line": f"{display}의 관계 점수 {before_i} → {after_i}",
+            "delta": delta,
+            "question": question,
+            "score_line": f"{display}의 관계 점수 {before_i} → {after_i} ({noun})",
             "reason": _reason_of(t, before_i, after_i, z_abs=za_f,
-                                 z_resid=zr_f, verdict=verdict),
+                                 z_resid=zr_f, verdict=abs_verdict),
+            "options": options,
+            "invited": invited,
+            "key_in_invited": bool(key_in_invited),
+            "reveal": reveal,
+            "misread": bool(row_misread),
         })
     n = len(momentum)
     marks_xy: list[list[float]] = []
@@ -321,6 +417,7 @@ def build_game(item, commentary, names=None, outcomes=None) -> dict:
         "id": item_id,
         "total": len(rows),
         "asked": asked_n,
+        "panel": panel_mode,
         "disagreement_p75": p75,
         "turns": rows,
         "momentum": [float(m) if isinstance(m, (int, float)) else 0.0
@@ -341,12 +438,15 @@ body{max-width:480px;margin:0 auto;padding:0 16px 40px;background:#fff;
   line-height:1.6}
 h1{font-size:20px;margin:20px 0 2px}
 h2{font-size:16px;margin:0 0 8px}
+.badge{display:inline-block;border:1px solid #c9d1d9;border-radius:999px;
+  padding:1px 10px;font-size:13px;color:#5b6470;background:#f7f8fa}
 small{color:#5b6470}
 .card{border:1px solid #e3e6ea;border-radius:12px;padding:14px;margin:12px 0;
   background:#f7f8fa}
 .note{color:#5b6470;font-size:13px}
 #speaker{font-weight:700;margin:0}
 #text{font-size:17px;margin:8px 0}
+#question{font-weight:700;margin:8px 0 0}
 #guessbtns{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 button{border:1px solid #c9d1d9;background:#fff;color:#222;border-radius:10px;
   padding:10px 12px;font-size:16px;cursor:pointer}
@@ -404,12 +504,28 @@ function savePicks(){
       {dialogue:dialogueId,picks:picks,hits:hits,asked:askedTotal}));
   }catch(e){}
 }
+function isHit(g,t){
+  if(!t)return false;
+  if(g===t.verdict)return true;
+  if(t.key_in_invited&&t.invited){
+    for(var j=0;j<t.invited.length;j++){if(g===t.invited[j])return true;}
+  }
+  return false;
+}
+var staticBtns=null;
+function bindGuessBtns(){
+  var btns=document.querySelectorAll("#guessbtns button");
+  for(var b=0;b<btns.length;b++){
+    btns[b].onclick=function(){onGuess(this.getAttribute("data-guess"));};
+  }
+}
 function showTurn(i){
   var t=turns[i];
   $("progress").textContent=progressText(i);
   $("speaker").textContent=t.display||t.speaker;
   $("text").textContent=t.text||"";
   if(!t.asked){
+    $("question").textContent="";
     $("guessbtns").hidden=true;
     $("verdict").textContent="해설 없음";
     $("scoreline").textContent=t.score_line||"";
@@ -419,19 +535,37 @@ function showTurn(i){
     $("next").textContent=(i+1<N)?"다음":"결과 보기";
     return;
   }
+  $("question").textContent=t.question||"";
   $("reveal").hidden=true;
+  var gb=$("guessbtns");
+  if(t.options&&t.options.length){
+    gb.innerHTML="";
+    for(var o=0;o<t.options.length;o++){
+      var btn=document.createElement("button");
+      btn.type="button";
+      btn.setAttribute("data-guess",t.options[o].value);
+      btn.textContent=t.options[o].label;
+      gb.appendChild(btn);
+    }
+    gb.setAttribute("data-dyn","1");
+  }else if(gb.getAttribute("data-dyn")==="1"&&staticBtns!==null){
+    gb.innerHTML=staticBtns;
+    gb.removeAttribute("data-dyn");
+  }
+  bindGuessBtns();
   $("guessbtns").hidden=false;
 }
 function onGuess(g){
   var t=turns[idx];
   if(!t||!t.asked)return;
-  var ok=(g===t.verdict);
+  var ok=isHit(g,t);
   guesses[idx]=g;
   picks.push({turn:t.index,pick:g,key:t.verdict,z_abs:t.z_abs});
   if(ok)hits++;
   askedDone++;
   savePicks();
-  $("verdict").textContent="해설자 판정: "+t.verdict+(ok?" (맞힘 \\u2713)":" (틀림 \\u2717)");
+  if(t.reveal){$("verdict").textContent=t.reveal+(ok?" (맞힘 \\u2713)":" (틀림 \\u2717)");}
+  else{$("verdict").textContent="해설자 판정: "+t.verdict+(ok?" (맞힘 \\u2713)":" (틀림 \\u2717)");}
   $("scoreline").textContent=t.score_line||"";
   $("reason").textContent=t.reason||"";
   $("guessbtns").hidden=true;
@@ -448,7 +582,7 @@ function markTide(){
     if(guesses[i]===null||guesses[i]===undefined)continue;
     var p=xy[i];
     if(!p)continue;
-    var ok=guesses[i]===turns[i].verdict;
+    var ok=isHit(guesses[i],turns[i]);
     var tx=document.createElementNS(NS,"text");
     tx.setAttribute("x",p[0]);
     tx.setAttribute("y",p[1]-14);
@@ -466,6 +600,19 @@ function showEnd(){
   $("end").hidden=false;
   var pct=askedTotal?Math.round(100*hits/askedTotal):0;
   $("hitrate").textContent="해설자와 "+askedTotal+"수 중 "+hits+"수 일치 ("+pct+"%)";
+  var ml=$("misreadline");
+  if(ml){
+    if(data.panel){
+      var misN=0,misK=0;
+      for(var m=0;m<N;m++){
+        var tm=turns[m];
+        if(!tm||!tm.misread)continue;
+        misN++;
+        if(tm.asked&&guesses[m]!==null&&guesses[m]!==undefined&&isHit(guesses[m],tm))misK++;
+      }
+      ml.textContent="오해 지점 "+misN+"곳 중 "+misK+"곳을 미리 봤다";
+    }else{ml.textContent="";}
+  }
   var share="나는 협상의 흐름을 "+askedTotal+"수 중 "+hits+"수 맞혔다 — uptake";
   $("share").value=share;
   savePicks();
@@ -486,12 +633,8 @@ $("start").addEventListener("click",function(){
   $("tally").textContent="나 0 / 해설자 0";
   showTurn(0);
 });
-var btns=document.querySelectorAll("#guessbtns button");
-for(var b=0;b<btns.length;b++){
-  btns[b].addEventListener("click",function(){
-    onGuess(this.getAttribute("data-guess"));
-  });
-}
+staticBtns=document.getElementById("guessbtns").innerHTML;
+bindGuessBtns();
 $("next").addEventListener("click",function(){
   idx++;
   if(idx<N)showTurn(idx);
@@ -567,8 +710,15 @@ def render_html(game) -> str:
         "turns": [t for t in turns if isinstance(t, dict)],
         "total": total,
         "asked": asked,
+        "panel": bool(game.get("panel")),
         "marks_xy": game.get("marks_xy", []),
     }
+    if game.get("panel"):
+        badge_html = ""
+        footnote = "질문은 '상대가 어떻게 받을까'입니다"
+    else:
+        badge_html = '<p class="note"><span class="badge">관계 축만</span></p>\n'
+        footnote = "질문은 '직전보다 오르나 내리나'입니다"
     data_json = json.dumps(data, ensure_ascii=False)
     data_json = (data_json.replace("<", "\\u003c")
                  .replace(">", "\\u003e").replace("&", "\\u0026"))
@@ -593,12 +743,14 @@ def render_html(game) -> str:
         '<section id="intro" class="card">\n'
         f"<p>{html.escape(INTRO)}</p>\n"
         f'<p class="note">{html.escape(INTRO_NOTE)}</p>\n'
+        + badge_html +
         '<button id="start" type="button">시작</button>\n'
         "</section>\n"
         '<section id="play" class="card" hidden>\n'
         '<p class="note" id="progress"></p>\n'
         '<p id="speaker"></p>\n'
         '<p id="text"></p>\n'
+        '<p id="question"></p>\n'
         '<div id="guessbtns">' + guess_btns + "</div>\n"
         '<div id="reveal" hidden>\n'
         '<p id="verdict"></p>\n'
@@ -611,6 +763,7 @@ def render_html(game) -> str:
         '<section id="end" class="card" hidden>\n'
         "<h2>결과</h2>\n"
         '<p id="hitrate"></p>\n'
+        '<p id="misreadline"></p>\n'
         '<div id="tidewrap">' + tide + "</div>\n"
         + legend_html + "\n"
         + '<p id="outcome"><b>실제 결과:</b> ' + outcome + "</p>\n"
@@ -618,7 +771,7 @@ def render_html(game) -> str:
         + '<textarea id="share" readonly rows="3"></textarea>\n'
         + '<button id="copy" type="button">복사</button>\n'
         + '<button id="export" type="button">내 답 내보내기</button>\n'
-        + '<p class="note">자가 확신한 수만 출제했습니다</p>\n'
+        + '<p class="note">' + footnote + "</p>\n"
         + '<p id="lastscore" class="note"></p>\n'
         + "</section>\n"
         + '<script id="data" type="application/json">'
@@ -635,6 +788,8 @@ def main(argv=None) -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--names", default=None,
                     help="JSON object mapping speaker labels to display names")
+    ap.add_argument("--panel", default=None,
+                    help="0-100/dist5 panel record of the same dialogue")
     args = ap.parse_args(argv)
 
     with open(args.item, encoding="utf-8") as f:
@@ -650,5 +805,5 @@ def main(argv=None) -> None:
     out_path = Path(args.out)
     if str(out_path.parent) and str(out_path.parent) != ".":
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    game = build_game(item, commentary, names=names)
+    game = build_game(item, commentary, names=names, panel=args.panel)
     out_path.write_text(render_html(game), encoding="utf-8")
