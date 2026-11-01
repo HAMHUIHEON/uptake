@@ -11,7 +11,6 @@ import pytest
 from forecaster import board as B
 from forecaster import board2 as B2
 from forecaster import commentary as CM
-from forecaster import game as G
 from forecaster import labels as L
 from forecaster import misread as MR
 from forecaster import viewer2 as V2
@@ -273,86 +272,6 @@ def test_board2_panel_cli(tmp_path):
     assert "어긋난 턴 1 / 4" in page
 
 
-# --- game -------------------------------------------------------------------
-
-def test_game_with_panel_asks_next_actions():
-    item, com = _pairwise_story()
-    game = G.build_game(item, com, panel=_panel_fixture())
-    assert game["panel"] is True
-    turns = game["turns"]
-    assert [t["verdict"] for t in turns] == [
-        "negotiate", "comply", "ask_clarification", "refuse"]
-    assert [t["asked"] for t in turns] == [True, True, True, True]
-    assert all(t["question"] == "상대는 이 말을 어떻게 받을까?"
-               for t in turns)
-    t1 = turns[1]
-    assert t1["invited"] == ["refuse", "negotiate", "ask_clarification",
-                             "withdraw"]
-    assert t1["key_in_invited"] is False
-    assert 5 <= len(t1["options"]) <= 6
-    assert "comply" in [o["value"] for o in t1["options"]]
-    assert "따른다" in [o["label"] for o in t1["options"]]
-    assert t1["reveal"].startswith(
-        "상대 판정: 따른다(67%) · 체면 위협 큼 · 관계 50 → ")
-    assert t1["reason"]  # 49b reason line stays
-    assert t1["misread"] is True
-    assert turns[0]["key_in_invited"] is True
-    assert [t["misread"] for t in turns] == [False, True, False, False]
-    page = G.render_html(game)
-    data = _data_of(page)
-    assert data["panel"] is True
-    assert data["asked"] == 4
-    assert "오해 지점" in page and "미리 봤다" in page
-    assert "상대가 어떻게 받을까" in page
-    assert "관계 축만" not in page
-
-
-def test_game_panel_asks_only_majority_half_and_up():
-    item, com = _pairwise_story()
-    panel = _panel_fixture()
-    panel["effects"][0] = _peff(
-        0, "A", [_reading("negotiate", 0.5, 0),
-                 _reading("comply", 0.0, 1),
-                 _reading("refuse", -0.2, 1)], "B")
-    game = G.build_game(item, com, panel=panel)
-    turns = game["turns"]
-    assert turns[0]["verdict"] == "comply"  # 1/3 tie, canonical first
-    assert turns[0]["asked"] is False
-    assert [t["asked"] for t in turns[1:]] == [True, True, True]
-    assert game["asked"] == 3
-
-
-def test_game_without_panel_keeps_direction_and_badge(tmp_path):
-    item, com = _pairwise_story()
-    game = G.build_game(item, com)
-    assert game["panel"] is False
-    page = G.render_html(game)
-    assert "관계 축만" in page
-    assert "오를까, 그대로일까, 내릴까?" in page
-    data = _data_of(page)
-    assert data["panel"] is False
-    assert all(t["options"] == [] for t in data["turns"])
-
-
-def test_game_panel_cli(tmp_path):
-    item, com = _pairwise_story()
-    item_p = tmp_path / "record.json"
-    com_p = tmp_path / "commentary.json"
-    panel_p = tmp_path / "panel.json"
-    out_p = tmp_path / "game.html"
-    item_p.write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
-    com_p.write_text(json.dumps(com, ensure_ascii=False), encoding="utf-8")
-    panel_p.write_text(json.dumps(_panel_fixture(), ensure_ascii=False),
-                       encoding="utf-8")
-    G.main(["--item", str(item_p), "--commentary", str(com_p),
-            "--out", str(out_p), "--panel", str(panel_p)])
-    page = out_p.read_text(encoding="utf-8")
-    data = _data_of(page)
-    assert [t["verdict"] for t in data["turns"]] == [
-        "negotiate", "comply", "ask_clarification", "refuse"]
-    assert "오해 지점" in page and "미리 봤다" in page
-
-
 # --- reuse + stdlib ----------------------------------------------------------
 
 def test_reuses_board_labels_and_misread():
@@ -361,7 +280,6 @@ def test_reuses_board_labels_and_misread():
     assert MR.NEXT_ACTIONS is L.NEXT_ACTIONS
     assert MR.MOVE_KO is V2.MOVE_KO
     assert B2.misread is MR
-    assert G.misread is MR
 
 
 def test_misread_stdlib_only():
