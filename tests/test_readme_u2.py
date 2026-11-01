@@ -55,7 +55,6 @@ def test_readme_names_avianca_case():
 def test_readme_reports_reliability():
     text = _text().lower()
     assert "reliab" in text
-    assert "0.863" in text
 
 
 def test_readme_states_limits_and_meta_models():

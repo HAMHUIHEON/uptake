@@ -31,56 +31,62 @@ success and recovery cases, not only tragedies.
 
 ## What it does
 
-- **Show where misdelivery arose.** For each turn: how the speaker
-  steered the conversation, how each listener received it, what was
-  wanted vs what happened on each stake, and whether the gap looks
-  intentional.
-- **Show what was wanted on each stake.** Alerts come only from stake
-  gaps of missed, partly, or cost — one per turn and stake, each with
-  the reply-turn quote it was judged from. Relationship movement alone
-  never raises an alert.
-- **Show what could have been said differently.** Alternatives for the
-  decisive turn are compared against the original on the same
-  simulated listener panel, paired, with confidence intervals and
-  negative controls (identical-vs-identical near 0.5, a deliberately
-  worse rewrite below 0.5).
+- **Show wanted vs actual on items.** Each turn gets wanted vs actual
+  values on items. Each item carries a measured or reference grade.
+- **Show alerts and standing from measured items only.** Alerts and
+  standing use measured items only.
+- **Show a move mark per turn.** A move mark per turn is computed from
+  measured items. It is left blank when no value exists.
+- **Show stakes with sources.** Recorded stakes are shown with their
+  source. Otherwise the weight is a model estimate marked as such.
+- **Show a full-conversation judgment.** A full-conversation model
+  judgment picks the decisive turn and scenes. It is labeled reference,
+  not measurement.
+- **Show what could have been said differently.** Alternatives are
+  compared against the original on one criterion, paired, with an
+  identical control, a worse control and a middle control.
 - **Track goals, not personalities.** Each speaker's goal in that
-  conversation, when their strategy shifted, and the plus/minus left
-  against their own goal when the talk ended. No per-person scores.
+  conversation, when their strategy shifted, and what remains against
+  their own goal. No per-person scores.
 
 ## How it works
 
-- **L0 input.** Plain text, or audio transcribed with speaker diarization
+- **Input.** Plain text, or audio transcribed with speaker diarization
   via Muse Voice Transcribe (`muse-voice-transcribe-1.0`).
-- **L1 move record.** Every turn is tagged with move types (e.g.
+- **Move record.** Every turn is tagged with move types (e.g.
   proposing, conceding, probing) using `muse-spark-1.3-contributor`.
-- **L3 simulated listener panel.** A panel of simulated listeners reads
-  each turn from situational stances — roles and stakes in the situation,
-  not personality types (`muse-spark-1.3-contributor`).
-- **L4 wanted-vs-happened gap.** Each turn is read on four stakes —
-  outcome, relationship, face, understanding — with wanted, happened,
-  gap (met, partly, missed, cost, not_relevant, unclear), and the
-  reply-turn quote as evidence, judged after the reply is seen.
-  A general urgent-read-as-routine rule describes the decisive read;
-  relationship movement alone never raises an alert.
-- **L5 report.** Goals and shifts, turning points (how each turn was
-  steered and how it was received), the alert timeline, the
-  intended-said-read triple, alternatives, a one-line perspective, the
-  end balance, and self-reliability (`muse-spark-1.3-contributor`
-  reads; `muse-spark-1.3` judges whether the core meaning survived).
+- **Per-turn item reading.** Each turn gets wanted vs actual values on
+  items, read after the reply is seen, using
+  `muse-spark-1.3-contributor`. Each item carries a measured or
+  reference grade.
+- **Alerts, standing, and marks.** Alerts and standing use measured
+  items only. A move mark per turn is computed from measured items.
+  It is left blank when no value exists.
+- **Stakes.** Recorded stakes are shown with their source. Otherwise
+  the weight is a model estimate marked as such.
+- **Judgment.** A full-conversation model judgment picks the decisive
+  turn and scenes, using `muse-spark-1.3`. It is labeled reference,
+  not measurement.
+- **Alternatives.** Alternatives are compared against the original on
+  one criterion, paired, with an identical control, a worse control
+  and a middle control.
+- **Report.** Goals and shifts, turning points, the alert timeline,
+  alternatives, the end balance, and reliability notes. Each claim
+  says where its value came from.
 
 ## Measured so far
 
 - **Move record**, on CaSiNo negotiation dialogues (CC BY 4.0), held-out
   30 dialogues: micro F1 0.624 [0.569–0.677], macro F1 0.544
   [0.481–0.596]; majority baseline 0.289.
-- **Reliability** (pre-registered, measured on the method study, not on
-  any single case): split-half reliability 0.863 (k=8); outcome
-  R1 +0.277 on held-out set 1, +0.344 on held-out set 2;
-  perturbation direction 16/20 (0.8). Per-case reports reuse these
-  values and say so in their limits.
-- **Control messages** (messages that should communicate fine): false-alarm
-  rate measured and being reduced (first run 2/6). Work in progress.
+- **Item grades.** Item grades come from repeat reading and an
+  external-answer comparison. The commitment item stays reference
+  after a retest.
+- **Alternatives.** Alternatives separate better from worse direction
+  but do not yet separate middle from good wording.
+- **Not measured yet.** Whether end balances match self-reports,
+  whether quiet conversations stay quiet, and held-out cases have not
+  been measured yet.
 
 ## Quick start
 
@@ -134,7 +140,3 @@ uptake-eval-moves --casino <casino-dir> --n 30 --out eval.json
   It reads the utterance, not the person.
 - Analysis of recorded conversations only, not advice. Record only
   conversations you take part in, and get consent first.
-
-## Background
-
-Built for the Meta Global AI Developer Hackathon (Oct 27 – Nov 4, 2026).
