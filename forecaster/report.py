@@ -145,6 +145,25 @@ def load_case_meta() -> dict:
         return {}
     return {k: v for k, v in data.items() if not str(k).startswith("_")}
 
+
+def load_stakes_records() -> dict:
+    """Recorded stakes weights by case id.
+
+    Read from the ``stakes_records.json`` sidecar at run time, the
+    same way load_case_meta reads report_meta.json. Returns {}
+    when the file is missing or unreadable; callers then fall back
+    to the reading's own value.
+    """
+    path = Path(__file__).resolve().parent / "stakes_records.json"
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if not str(k).startswith("_")}
+
 #: Severity rank for alert levels (higher = worse).
 LEVEL_RANK = {"advisory": 0, "caution": 1, "warning": 2, "critical": 3}
 
@@ -3116,10 +3135,14 @@ def build_report(case_id, data_root="data/private", model=None, meter=None,
         from .reader import MuseClient
         client = MuseClient(meter=meter)
     from .multilayer import build_multilayer, measured_items, turn_effect
+    stakes_record = case.get("stakes_record")
+    if stakes_record is None:
+        records = load_stakes_records()
+        stakes_record = records.get(case_id, records.get(str(case_id)))
     layered = build_multilayer(turns, client=client, model=model, meter=meter,
                                cache_dir=cache_dir, max_turns=max_turns,
                                record={"title": case.get("title"), "note": case.get("note")},
-                               stakes_record=case.get("stakes_record"))
+                               stakes_record=stakes_record)
     uptake, alerts, standing = layered["uptake"], layered["alerts"], layered["standing"]
     use = measured_items(layered["grades"])
     for u in uptake:
@@ -3649,16 +3672,15 @@ def render_html(report) -> str:
         if split_rows:
             end_stake_html += ("<p>Where each stake shifted most:</p><ul>"
                                + "".join(split_rows) + "</ul>")
-        balance_intro = ("<p>Average across stakes, kept in the record for "
-                         "sorting only and not a score of the person; read "
-                         "the table above first. Each row's basis says what "
-                         "its number comes from.</p>")
-        balance_head = "Average (sorting only)"
+        balance_intro = ""
+        balance_table = ""
     else:
         end_stake_html = f"<p>{esc(NO_STAKE_VALUES)}</p>"
         balance_intro = ("<p>Without per-stake values, each row's basis says "
                          "what its number comes from.</p>")
-        balance_head = "Balance"
+        balance_table = ("<table>"
+                         "<tr><th>Speaker</th><th>Balance</th><th>Basis</th></tr>"
+                         + "".join(balance_rows) + "</table>")
     alt_blocks = []
     quote = str(decisive.get("quote", ""))
     read_prob = decisive.get("read_prob")
@@ -3833,10 +3855,7 @@ wanted effect happened; minus means it did not.</p>
 {end_stake_html}
 {speaker_position_html}
 {balance_intro}
-<table>
-<tr><th>Speaker</th><th>{balance_head}</th><th>Basis</th></tr>
-{"".join(balance_rows)}
-</table>
+{balance_table}
 </section>
 <section id="reliability">
 <h2>9. How much to trust this</h2>

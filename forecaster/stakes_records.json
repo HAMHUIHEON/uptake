@@ -1,0 +1,27 @@
+{
+ "_note": "Recorded stakes by case, one fixed scale: everyday 0, relationship 25, reputation or money 50, life and death 100. Set by what was at stake in the talk, not by the outcome or a death count.",
+ "avianca052": {
+  "weight": 100,
+  "basis": "Life and death at stake in the talk itself: fuel remaining for an aircraft in the air"
+ },
+ "airflorida90": {
+  "weight": 100,
+  "basis": "Life and death at stake in the talk itself: takeoff decision with ice on the wings"
+ },
+ "tenerife1977": {
+  "weight": 100,
+  "basis": "Life and death at stake in the talk itself: takeoff clearance on a shared runway"
+ },
+ "usair1549": {
+  "weight": 100,
+  "basis": "Life and death at stake in the talk itself: both engines lost over a city"
+ },
+ "227": {
+  "weight": 0,
+  "basis": "Everyday: trading camp supplies"
+ },
+ "243": {
+  "weight": 0,
+  "basis": "Everyday: trading camp supplies"
+ }
+}

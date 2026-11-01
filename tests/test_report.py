@@ -1373,10 +1373,17 @@ def test_balance_shows_end_values_by_speaker_and_stake_first(tmp_path):
     assert by_sp["B"][1].startswith("+1.068 (mean +0.059, 18 turns)")
     # An unjudged stake is a dash, not a zero.
     assert by_sp["B"][3].startswith("–")
-    # The heading opens the section, the stake table comes before the average.
+    # The heading opens the section; the per-stake table stands alone.
     assert section.strip().startswith("<h2>8. Plus and minus at the end</h2>")
-    assert section.index("-1.375") < section.index("Average (sorting only)")
-    assert section.index("-1.375") < section.index("<td>-0.091</td>")
+    assert "-1.375" in section
+    assert "Average (sorting only)" not in section
+    assert "<td>-0.091</td>" not in section
+
+
+def test_balance_hides_average_table_but_json_keeps_the_value(tmp_path):
+    r = _with_end_values(_report(tmp_path))
+    assert "Average (sorting only)" not in R.render_html(r)
+    assert r["speakers"][0]["end_balance"] == -0.091
 
 
 def test_balance_scope_says_conversation_only_not_event_outcome(tmp_path):
@@ -1535,11 +1542,11 @@ def test_balance_without_end_values_says_so(tmp_path):
 _STAKES_BASIS = "The board report lists a total loss of the aircraft."
 
 
-def _stakes_report(tmp_path, monkeypatch, stakes_record=None):
+def _stakes_report(tmp_path, monkeypatch, stakes_record=None, case_id="t1"):
     """A report through the real reading path, on a stub model, with the record in the case file."""
     import forecaster.multilayer as ML
-    _write_case(tmp_path)
-    case_path = tmp_path / "highstakes" / "casino-t1_case.json"
+    _write_case(tmp_path, case_id=case_id)
+    case_path = tmp_path / "highstakes" / f"casino-{case_id}_case.json"
     case = json.loads(case_path.read_text(encoding="utf-8"))
     if stakes_record is not None:
         case["stakes_record"] = stakes_record
@@ -1563,7 +1570,7 @@ def _stakes_report(tmp_path, monkeypatch, stakes_record=None):
                     record=kwargs["record"], stakes_record=kwargs["stakes_record"], grades=_GRADES)
 
     monkeypatch.setattr(ML, "build_multilayer", fake)
-    return R.build_report("t1", data_root=str(tmp_path)), seen
+    return R.build_report(case_id, data_root=str(tmp_path)), seen
 
 
 def test_report_shows_recorded_stakes_weight_and_source(tmp_path, monkeypatch):
@@ -1584,6 +1591,18 @@ def test_report_without_or_with_bad_record_shows_model_estimate(tmp_path, monkey
     assert plain["conditions"]["stakes_weight"] == bad["conditions"]["stakes_weight"] == 20.0
     assert plain["alerts"] == bad["alerts"]
     assert "stakes_weight: 20.0 (model estimate)" in R.render_html(bad)
+
+
+def test_recorded_stakes_file_applies_by_case_id(tmp_path, monkeypatch):
+    rec = R.load_stakes_records()["227"]
+    r, _ = _stakes_report(tmp_path / "with", monkeypatch, case_id="227")
+    assert r["conditions"]["stakes_source"] == f"record: {rec['basis']}"
+    assert r["conditions"]["stakes_source"].startswith("record: ")
+    assert r["conditions"]["stakes_weight"] == float(rec["weight"])
+    assert r["conditions"]["stakes_weight_model"] == 20.0
+    plain, _ = _stakes_report(tmp_path / "without", monkeypatch, case_id="t1")
+    assert plain["conditions"]["stakes_source"] == "model estimate"
+    assert plain["conditions"]["stakes_weight"] == 20.0
 
 
 def test_report_limits_state_how_far_the_stakes_weight_is_tested(tmp_path, monkeypatch):
