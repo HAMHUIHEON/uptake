@@ -4,6 +4,7 @@ The product sentence leads (turn-by-turn wanted-vs-happened reading on
 four stakes), with the Avianca case, measured reliability,
 limits, and Meta models. Prediction and advance claims stay out.
 """
+import re
 from pathlib import Path
 
 README = Path(__file__).resolve().parent.parent / "README.md"
