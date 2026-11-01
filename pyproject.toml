@@ -40,6 +40,7 @@ uptake-play = "forecaster.play_server:play_main"
 uptake-scenes-eval = "forecaster.scenes_eval:main"
 uptake-scenes = "forecaster.scenes:main"
 uptake-suggest = "forecaster.suggest:main"
+uptake-report = "forecaster.report:main"
 
 [tool.setuptools.packages.find]
 include = ["forecaster"]

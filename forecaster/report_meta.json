@@ -1,0 +1,63 @@
+{
+  "_note": "Per-case display metadata for uptake-report (domain, type, English glosses). Detection rules never read this table; it only labels the report. English titles/outcomes are editor glosses of the case record, kept here as data so report code embeds no case names or quoted phrases.",
+  "avianca052": {
+    "domain": "atc",
+    "result_type": "tragedy",
+    "title_en": "Avianca 052 — fuel emergency misread on approach to JFK",
+    "outcome_en": "Ran out of fuel and crashed at Cove Neck; 73 of 158 aboard died. The word 'emergency' was never spoken to ATC."
+  },
+  "airflorida90": {
+    "domain": "safety",
+    "result_type": "tragedy",
+    "title_en": "Air Florida 90 — icing warnings softened in the cockpit",
+    "outcome_en": "Took off with ice on the wings and hit the 14th Street Bridge; 78 died. The first officer hinted at wrong readings four times."
+  },
+  "tenerife1977": {
+    "domain": "atc",
+    "result_type": "tragedy",
+    "title_en": "Tenerife 1977 — 'takeoff' heard as position, not action",
+    "outcome_en": "KLM 747 began its takeoff roll without clearance and collided with the Pan Am 747 on the runway; 583 died."
+  },
+  "lear_1_1": {
+    "domain": "literature",
+    "result_type": "tragedy",
+    "title_en": "King Lear 1.1 — 'Nothing, my lord' heard as defiance",
+    "outcome_en": "Lear reads Cordelia's 'Nothing' as loveless disobedience, disinherits her and banishes Kent. The tragedy's starting point."
+  },
+  "usair1549": {
+    "domain": "atc",
+    "result_type": "success",
+    "title_en": "US Airways 1549 — short words that landed everyone safely",
+    "outcome_en": "Both engines lost; ditched in the Hudson with all 155 surviving. Brief, plain words met with options from ATC."
+  },
+  "sejong_1444": {
+    "domain": "policy",
+    "result_type": "non_tragedy",
+    "title_en": "Sejong 1444 — a policy protest argued, not punished",
+    "outcome_en": "Sejong answered the anti-Hangul memorial point by point, jailed the memorialists for a day and freed them. Dissent handled as debate."
+  },
+  "reykjavik1986": {
+    "domain": "diplomacy",
+    "result_type": "non_tragedy",
+    "title_en": "Reykjavik 1986 — 'laboratory' read two ways",
+    "outcome_en": "Close to a strategic-arms deal, the summit broke over SDI testing confined to the 'laboratory'; led to the INF treaty a year later."
+  },
+  "aci_D2N068": {
+    "domain": "medical",
+    "result_type": "non_tragedy",
+    "title_en": "Mock clinic visit (ACI-Bench D2N068) — did the plan land?",
+    "outcome_en": "Simulated visit (not a real patient): where the treatment plan did or did not get across."
+  },
+  "227": {
+    "domain": "negotiation",
+    "result_type": "control",
+    "title_en": "CaSiNo 227 — control negotiation",
+    "outcome_en": "Everyday trading over camp supplies (control dialogue; nothing at stake)."
+  },
+  "243": {
+    "domain": "negotiation",
+    "result_type": "control",
+    "title_en": "CaSiNo 243 — control negotiation",
+    "outcome_en": "Everyday trading over camp supplies (control dialogue; nothing at stake)."
+  }
+}
