@@ -285,3 +285,19 @@ def test_align_is_stdlib_only():
 def test_entry_point_registered():
     pyproject = Path(AL.__file__).resolve().parent.parent / "pyproject.toml"
     assert 'uptake-align = "forecaster.align:main"' in pyproject.read_text()
+
+
+def test_tokenize_keeps_generic_callsign_tokens():
+    # Generic rule: lowercased alphanumeric runs keep digits and
+    # callsign-style tokens, with no case-specific word list.
+    assert AL.tokenize("Speedbird 123, climb!") == [
+        "speedbird", "123", "climb"]
+
+
+def test_align_module_has_no_hardcoded_case_phrases():
+    # T2: case names/utterances must not be baked into code; the
+    # alignment rule stays generic (alphanumeric tokens + Jaccard).
+    src = Path(AL.__file__).read_text(encoding="utf-8")
+    low = src.lower()
+    for phrase in ("cactus", "usair1549", "1549"):
+        assert phrase not in low, phrase

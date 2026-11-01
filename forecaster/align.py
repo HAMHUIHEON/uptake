@@ -1,6 +1,6 @@
 """Transcript <-> audio alignment for the audio panel (task59).
 
-For cases with real public audio (usair1549 first), the text panel reads the
+For cases with real public audio, the text panel reads the
 case transcript while the audio panel (task36) reads turns cut from the
 recording. This module aligns each record turn (by ``index``) to a fresh
 transcription of the audio so both panels read the same turns.
@@ -20,7 +20,7 @@ Pipeline (``uptake-align --audio WAV --record JSON --out JSON [--model M]``):
    ``{aligned, unaligned, mean_similarity, offset_hint}``.
 
 Tokenization is lowercased alphanumeric runs (``[a-z0-9]+``), so digits and
-callsign tokens such as ``cactus`` / ``1549`` are kept. Similarity is the
+callsign-style tokens are kept. Similarity is the
 Jaccard index over token sets (0.0 when either side has no tokens).
 
 ``mean_similarity`` is the mean over aligned turns only (0.0 when nothing
