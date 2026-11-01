@@ -65,8 +65,8 @@ success and recovery cases, not only tragedies.
 - **Stakes.** Recorded stakes are shown with their source. Otherwise
   the weight is a model estimate marked as such.
 - **Judgment.** A full-conversation model judgment picks the decisive
-  turn and scenes, using `muse-spark-1.3`. It is labeled reference,
-  not measurement.
+  turn and scenes, using `muse-spark-1.3-contributor`. It is labeled reference,
+  not measurement; private batch items use `muse-spark-1.3`.
 - **Alternatives.** Alternatives are compared against the original on
   one criterion, paired, with an identical control, a worse control
   and a middle control.
