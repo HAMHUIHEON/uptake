@@ -3537,16 +3537,20 @@ def _end_read_cell(entry) -> str:
     mean = entry.get("mean")
     if mean is None:
         return "–"
+
+    def _signed(raw) -> str:
+        return f"{(float(raw) - 50.0) / 50.0:+.2f}"
+
     scores = entry.get("scores", entry.get("reads", [])) or []
     parts = []
     for v in scores:
         if isinstance(v, (int, float)) and not isinstance(v, bool):
-            parts.append(f"{float(v):.1f}")
+            parts.append(_signed(v))
         else:
             parts.append("–")
     if parts:
-        return f"{float(mean):.1f} (reads {', '.join(parts)})"
-    return f"{float(mean):.1f}"
+        return f"{_signed(mean)} (reads {', '.join(parts)})"
+    return _signed(mean)
 
 
 def _end_gap_cell(value) -> str:
@@ -3833,7 +3837,9 @@ def render_html(report) -> str:
                         "<p>{}: settled: {}.</p>".format(
                             esc(str(sp.get("speaker", "?"))), esc("; ".join(parts))))
         end_read_html = (
-            "<p>End read by stake, from three reads of the finished conversation. "
+            "<p>End read by stake, from three reads of the finished conversation, "
+            "on the same −1 to +1 scale: +1 means the speaker fully got what they "
+            "wanted on that stake, 0 means no change, −1 means far worse off. "
             "Each cell is the mean and the three reads. Goal source is record "
             "when the case record gives a goal, else none.</p>"
             "<table><tr><th>Speaker</th><th>Goal source</th>" + heads + "</tr>"
