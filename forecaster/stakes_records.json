@@ -23,5 +23,17 @@
  "243": {
   "weight": 0,
   "basis": "Everyday: trading camp supplies"
+ },
+ "dipl_unsc_8105_20171116": {
+  "weight": 50,
+  "basis": "Reputation or money: whether a chemical weapons investigation mandate is renewed; no immediate life-and-death decision in the talk itself"
+ },
+ "med_jackson_911_20090625": {
+  "weight": 100,
+  "basis": "Life and death at stake in the talk itself: an ambulance call for a person who is not breathing"
+ },
+ "police_mpls_911_20170715": {
+  "weight": 100,
+  "basis": "Life and death at stake in the talk itself: a call reporting a person in danger in an alley"
  }
 }
