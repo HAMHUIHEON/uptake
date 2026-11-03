@@ -59,5 +59,11 @@
     "result_type": "control",
     "title_en": "CaSiNo 243 — control negotiation",
     "outcome_en": "Everyday trading over camp supplies (control dialogue; nothing at stake)."
+  },
+  "evidence": {
+    "end_read": "End read on the outcome stake against the speaker's own goal: self-reported satisfaction +0.41 (+0.28 to +0.53), deal points +0.31 (+0.18 to +0.43, second attempt; the first design scored +0.18), wrong-goal control +0.08 and +0.04. Measured on 100 negotiation conversations with deals only.",
+    "partner_effect": "Effect of the other speaker's turns on warmth and trust against own liking of them: +0.39 (+0.25 to +0.52), control -0.05. Measured on 100 negotiation conversations.",
+    "broken_reference": "Broken-item marks and alerts are reference only. Two registered tests of a tighter rule failed (22.5% of calm turns, AUC 0.725; then 13.8%, AUC 0.525) and the current rule marks 82% of calm turns. Whether the report stays quiet on well-understood conversations is not established.",
+    "scope": "None of this was measured on aviation, court or diplomacy records."
   }
 }

@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .board import annotate_turn
+from .usage import BudgetExceeded
 
 #: What is at stake: big class -> {item: what shows it in the text}.
 STAKE_ITEMS = {
@@ -498,6 +499,60 @@ def build_standing_items(readings, window=3, use=None) -> dict:
     return {"series": series, "end": end, "splits": splits}
 
 
+#: Calm reference in points for end gaps: mean (actual - wanted) on 40 calm
+#: wiki talk conversations, not a sample of well-understood conversations.
+CALM_REFERENCE = {
+    "deliverable": -30.481,
+    "warmth": -22.482,
+    "competence": -25.66,
+    "facts": -28.932,
+}
+#: Alias kept for readability at call sites.
+CALM_BASELINE = CALM_REFERENCE
+END_CALM_REFERENCE = CALM_REFERENCE
+
+
+def build_end_gaps(readings, use=None) -> dict:
+    """End value per speaker and item, against a calm reference.
+
+    For each speaker and each item in ``use``, the mean of
+    (actual - wanted) over turns with both values, minus the calm
+    reference for that item, divided by 100. An item with no values
+    is absent, never zero. No merged number per stake.
+    """
+    if use is None:
+        use = set(CALM_REFERENCE)
+    else:
+        use = set(use)
+    speakers: list = []
+    for r in readings or []:
+        sp = (r or {}).get("speaker", "?")
+        if sp not in speakers:
+            speakers.append(sp)
+    out: dict = {sp: {} for sp in speakers}
+    for sp in speakers:
+        for item in use:
+            diffs = []
+            for r in readings or []:
+                if (r or {}).get("speaker") != sp:
+                    continue
+                e = ((r or {}).get("items") or {}).get(item) or {}
+                w, a = e.get("wanted"), e.get("actual")
+                if not (isinstance(w, dict) and isinstance(a, dict)):
+                    continue
+                ws, ac = w.get("score"), a.get("score")
+                if not (isinstance(ws, (int, float)) and isinstance(ac, (int, float))):
+                    continue
+                if isinstance(ws, bool) or isinstance(ac, bool):
+                    continue
+                diffs.append(float(ac) - float(ws))
+            if not diffs:
+                continue
+            ref = CALM_REFERENCE.get(item, 0.0)
+            out[sp][item] = (sum(diffs) / len(diffs) - float(ref)) / 100.0
+    return out
+
+
 def build_alerts_items(readings, conditions, grades, window=RECOVERY_WINDOW) -> list:
     """One alert per broken turn; the level comes from size, stakes and confidence."""
     use, cuts, weight, alerts = measured_items(grades), grades["cuts"], (conditions or {}).get("stakes_weight"), []
@@ -553,3 +608,206 @@ def build_multilayer(turns, client=None, model=None, meter=None, cache_dir=None,
             "standing": build_standing_items(readings, use=measured_items(grades)),
             "grades_status": grades["status"], "grades": grades,
             "recovery": recovery(readings)}
+
+
+END_STAKES = ("outcome", "relationship", "face", "understanding")
+
+
+def end_read_prompt(with_goal: bool) -> str:
+    goal = ("Judge the outcome stake against the goal given for this speaker, not against "
+            "what they seemed to ask for in a single turn. " if with_goal else "")
+    return (
+        "You read a whole finished conversation for one named speaker. "
+        "For each of the four stakes (outcome, relationship, face, understanding) give how "
+        "the conversation left this speaker on that stake: 0 means far worse off than they "
+        "wanted, 50 means no change either way, 100 means fully got what they wanted. "
+        "outcome means what they were trying to get or get done; relationship means trust "
+        "and warmth with the others; face means standing, autonomy and being seen as "
+        "capable; understanding means whether what they meant and needed to know got across. "
+        f"{goal}"
+        f"{BINS_NOTE} "
+        "Null when the conversation does not bear on the stake. "
+        "Optional quote per stake: a verbatim span from the conversation, empty when none. "
+        "Do not judge whether the speaker was right or polite, and do not judge the person. "
+        "Keep quotes in the original language. "
+        'Reply with JSON only: {"stakes": {"<stake>": {"score": [...]|null, "quote": ""}}}.'
+    )
+
+
+def read_end(reader, turns, speaker, goal=None) -> dict:
+    lines = [f"Read for speaker: {speaker}"]
+    if goal is not None:
+        lines.append(f"Goal at the start: {goal}")
+    lines.append("Conversation:")
+    try:
+        for t in (turns or []):
+            if isinstance(t, dict):
+                lines.append(f"{t.get('speaker', '?')}: {t.get('text', '')}")
+            else:
+                lines.append(str(t or ""))
+    except Exception:
+        pass
+    user = "\n".join(lines)
+    try:
+        data = reader.ask(end_read_prompt(goal is not None), user)
+    except BudgetExceeded:
+        raise
+    except Exception:
+        data = None
+    try:
+        blob = _squash("\n".join(
+            str(t.get("text", "")) if isinstance(t, dict) else str(t or "")
+            for t in (turns or [])))
+    except Exception:
+        blob = ""
+    got = {}
+    try:
+        if isinstance(data, dict):
+            inner = data.get("stakes")
+            if not isinstance(inner, dict):
+                inner = data.get("items")
+            got = inner if isinstance(inner, dict) else {}
+    except Exception:
+        got = {}
+    stakes = {}
+    for stake in END_STAKES:
+        score, spread, quote = None, None, ""
+        try:
+            e = got.get(stake)
+            bins = None
+            if isinstance(e, (list, tuple)):
+                bins = e
+            elif isinstance(e, dict):
+                bins = e.get("score", e.get("bins"))
+                quote = str(e.get("quote") or "")
+            parsed = bins_to_score(bins)
+            if parsed:
+                score, spread = parsed["score"], parsed["spread"]
+            if not (_squash(quote) and _squash(quote) in blob):
+                quote = ""
+        except Exception:
+            score, spread, quote = None, None, ""
+        stakes[stake] = {"score": score, "spread": spread, "quote": quote}
+    return {"speaker": speaker, "goal": goal, "stakes": stakes}
+
+
+def end_read2_prompt(with_goal: bool) -> str:
+    goal = ("Judge the outcome stake by comparing the settled list against the goal given "
+            "for this speaker. " if with_goal else "")
+    return (
+        "You read a whole finished conversation for one named speaker. "
+        "First list what the conversation settled, as settled: one row per thing at stake, "
+        "with what this speaker ends up with and what the others end up with, in the amounts "
+        "the conversation states. "
+        "Use null for an amount the conversation does not state; never infer an amount from "
+        "what a speaker seemed to want. "
+        "An empty list is correct when nothing was settled. "
+        "Then score the four stakes using that list. "
+        "For each of the four stakes (outcome, relationship, face, understanding) give how "
+        "the conversation left this speaker on that stake: 0 means far worse off than they "
+        "wanted, 50 means no change either way, 100 means fully got what they wanted. "
+        "outcome means what they were trying to get or get done; relationship means trust "
+        "and warmth with the others; face means standing, autonomy and being seen as "
+        "capable; understanding means whether what they meant and needed to know got across. "
+        f"{goal}"
+        f"{BINS_NOTE} "
+        "Null when the conversation does not bear on the stake. "
+        "Optional quote per stake: a verbatim span from the conversation, empty when none. "
+        "Do not judge whether the speaker was right or polite, and do not judge the person. "
+        "Keep quotes in the original language. "
+        'Reply with JSON only: {"settled": [{"item": "", "speaker_gets": n|null, "others_get": '
+        'n|null}], "stakes": {"<stake>": {"score": [...]|null, "quote": ""}}}.'
+    )
+
+
+def _end_amount(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
+def read_end2(reader, turns, speaker, goal=None) -> dict:
+    lines = [f"Read for speaker: {speaker}"]
+    if goal is not None:
+        lines.append(f"Goal at the start: {goal}")
+    lines.append("Conversation:")
+    try:
+        for t in (turns or []):
+            if isinstance(t, dict):
+                lines.append(f"{t.get('speaker', '?')}: {t.get('text', '')}")
+            else:
+                lines.append(str(t or ""))
+    except Exception:
+        pass
+    user = "\n".join(lines)
+    try:
+        data = reader.ask(end_read2_prompt(goal is not None), user)
+    except BudgetExceeded:
+        raise
+    except Exception:
+        data = None
+    try:
+        blob = _squash("\n".join(
+            str(t.get("text", "")) if isinstance(t, dict) else str(t or "")
+            for t in (turns or [])))
+    except Exception:
+        blob = ""
+    got = {}
+    try:
+        if isinstance(data, dict):
+            inner = data.get("stakes")
+            if not isinstance(inner, dict):
+                inner = data.get("items")
+            got = inner if isinstance(inner, dict) else {}
+    except Exception:
+        got = {}
+    stakes = {}
+    for stake in END_STAKES:
+        score, spread, quote = None, None, ""
+        try:
+            e = got.get(stake)
+            bins = None
+            if isinstance(e, (list, tuple)):
+                bins = e
+            elif isinstance(e, dict):
+                bins = e.get("score", e.get("bins"))
+                quote = str(e.get("quote") or "")
+            parsed = bins_to_score(bins)
+            if parsed:
+                score, spread = parsed["score"], parsed["spread"]
+            if not (_squash(quote) and _squash(quote) in blob):
+                quote = ""
+        except Exception:
+            score, spread, quote = None, None, ""
+        stakes[stake] = {"score": score, "spread": spread, "quote": quote}
+    settled = []
+    try:
+        raw = data.get("settled") if isinstance(data, dict) else None
+        if isinstance(raw, list):
+            for row in raw:
+                try:
+                    if not isinstance(row, dict):
+                        continue
+                    item = row.get("item")
+                    if not isinstance(item, str):
+                        continue
+                    settled.append({"item": item,
+                                    "speaker_gets": _end_amount(row.get("speaker_gets")),
+                                    "others_get": _end_amount(row.get("others_get"))})
+                except Exception:
+                    continue
+    except Exception:
+        settled = []
+    return {"speaker": speaker, "goal": goal, "stakes": stakes, "settled": settled}

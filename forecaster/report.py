@@ -41,7 +41,7 @@ from .labels import NEXT_ACTIONS
 from .usage import BudgetExceeded, Meter
 from .v2 import STAKES
 
-REPORT_VERSION = "uptake-report/29"
+REPORT_VERSION = "uptake-report/30"
 
 #: Product sentence: the first paragraph of the README and the lead of
 #: every HTML report.
@@ -3119,6 +3119,75 @@ def top_severity_line(uptake, n=3) -> str:
     return ", ".join(f"#{turn} ({severity:.1f})" for severity, turn in ranked)
 
 
+def load_evidence() -> dict:
+    """Measured end-value evidence from the report_meta.json sidecar.
+
+    Returns the ``evidence`` object (end_read, partner_effect,
+    broken_reference, scope) or {} when missing. Detection rules
+    never read this; it only labels the report.
+    """
+    path = Path(__file__).resolve().parent / "report_meta.json"
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    ev = data.get("evidence") if isinstance(data, dict) else None
+    return ev if isinstance(ev, dict) else {}
+
+
+def recorded_goal_for(case, speaker):
+    """Record-based goal sentence for one speaker, or None.
+
+    Uses the participant record's value ranking when the case has
+    one; never a goal the model inferred from the whole
+    conversation, because that sees the ending.
+    """
+    pinfo = (case or {}).get("participant_info")
+    if not isinstance(pinfo, dict):
+        return None
+    rec = pinfo.get(speaker)
+    if not isinstance(rec, dict):
+        return None
+    return _value_goal_sentence(speaker, rec.get("value2issue"))
+
+
+def build_end_read(turns, speaker, goal, client, model, meter, cache_dir) -> dict:
+    """End read for one speaker: three read_end2 calls, averaged.
+
+    Calls read_end2 with Reader rep 0, 1, 2 and reports the mean
+    and the individual scores per stake, plus the settled rows of
+    the first read that returned any. Budget errors propagate.
+    Same cache rules as the other reads.
+    """
+    from .multilayer import END_STAKES, Reader, read_end2
+    goal_source = "record" if goal is not None else "none"
+    reads = []
+    for rep in (0, 1, 2):
+        reader = Reader(client, model, meter, cache_dir, rep=rep)
+        reads.append(read_end2(reader, turns, speaker, goal))
+    stakes = {}
+    for stake in END_STAKES:
+        scores = []
+        for r in reads:
+            try:
+                cell = ((r or {}).get("stakes") or {}).get(stake) or {}
+                v = cell.get("score")
+                scores.append(float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None)
+            except (TypeError, ValueError):
+                scores.append(None)
+        vals = [v for v in scores if v is not None]
+        mean = sum(vals) / len(vals) if vals else None
+        stakes[stake] = {"mean": mean, "scores": scores, "reads": list(scores)}
+    settled = []
+    for r in reads:
+        rows = (r or {}).get("settled")
+        if isinstance(rows, list) and rows:
+            settled = rows
+            break
+    return {"goal": goal, "goal_source": goal_source, "stakes": stakes, "settled": settled}
+
+
 def build_report(case_id, data_root="data/private", model=None, meter=None,
                  cache_dir=None, budget_note=None, max_turns=None, judgment_rep=0):
     turns, case, panel, _ = load_inputs(case_id, data_root)
@@ -3134,7 +3203,7 @@ def build_report(case_id, data_root="data/private", model=None, meter=None,
     if model:
         from .reader import MuseClient
         client = MuseClient(meter=meter)
-    from .multilayer import build_multilayer, measured_items, turn_effect
+    from .multilayer import build_end_gaps, build_multilayer, measured_items, turn_effect
     stakes_record = case.get("stakes_record")
     if stakes_record is None:
         records = load_stakes_records()
@@ -3274,9 +3343,18 @@ def build_report(case_id, data_root="data/private", model=None, meter=None,
                       "new wording cannot pass.")
     if budget_note:
         limits.append(budget_note)
+    evidence = load_evidence()
+    for key in ("end_read", "partner_effect", "broken_reference", "scope"):
+        text = evidence.get(key)
+        if isinstance(text, str) and text.strip():
+            limits.append(text.strip())
     reliability = build_reliability(scored, effects_by_turn,
                                     decisive["turn"], outcome_turn,
                                     n_turns, limits)
+    if evidence:
+        reliability["evidence"] = {k: evidence[k] for k in
+                                   ("end_read", "partner_effect", "broken_reference", "scope")
+                                   if k in evidence}
     report = {
         "id": case_id,
         "title": meta.get("title_en", str(case.get("title", case_id))),
@@ -3309,6 +3387,7 @@ def build_report(case_id, data_root="data/private", model=None, meter=None,
         "turning_points_source": turning_points_source,
         "standing": standing,
     }
+    gaps = build_end_gaps(uptake, use)
     for sp in report["speakers"]:
         row = standing["end"].get(str(sp.get("speaker")))
         if row:
@@ -3321,6 +3400,19 @@ def build_report(case_id, data_root="data/private", model=None, meter=None,
                                    "Each reading is how far the wanted effect "
                                    "landed, -1 to +1, weighted by how much it "
                                    "was wanted.")
+        name = str(sp.get("speaker"))
+        speaker_gaps = gaps.get(name, {})
+        sp["end_gaps"] = dict(speaker_gaps)
+        if speaker_gaps:
+            mean_gap = sum(speaker_gaps.values()) / len(speaker_gaps)
+            clipped = max(-1.0, min(1.0, mean_gap))
+            sp["end_balance"] = round(clipped, 3)
+            sp["end_basis"] = ("Mean of the per-item end values, kept for "
+                               "sorting only; read end_read and end_gaps. "
+                               "Each value is the mean of (actual minus wanted) "
+                               "against a calm reference, divided by 100.")
+        goal = recorded_goal_for(case, name)
+        sp["end_read"] = build_end_read(turns, name, goal, client, model, meter, cache_dir)
     return report
 
 
@@ -3408,15 +3500,15 @@ def render_readings(uptake, conditions, esc, grades=None) -> str:
             detail.append(line)
         body = "<br>".join(detail) or "No item supported by the words."
         rows.append(
-            "<tr><td>#{}</td><td>{}</td>{}<td>{}</td><td>{}</td><td><details><summary>items</summary>{}"
-            "</details></td></tr>".format(
-                esc(str(u.get("turn", ""))), esc(str(u.get("speaker", ""))), cells,
-                esc(", ".join(u.get("broken") or [])) or "–", _effect_cell(u.get("effect"), esc), body))
+            "<tr><td>#{}</td><td>{}</td>{}<td><details><summary>items</summary>{}"
+            "</details></td><td>{}</td><td>{}</td></tr>".format(
+                esc(str(u.get("turn", ""))), esc(str(u.get("speaker", ""))), cells, body,
+                esc(", ".join(u.get("broken") or [])) or "–", _effect_cell(u.get("effect"), esc)))
     heads = "".join(f"<th>{esc(c)}</th>" for c in STAKES)
     return (head + "<p>How far the wanted effect landed, 0 to 100, read after the reply. "
             "A dash means the words give no support.</p>"
-            f"<table><tr><th>Turn</th><th>Speaker</th>{heads}<th>Fell short</th>"
-            "<th>Turn effect (measured items)</th><th></th></tr>"
+            f"<table><tr><th>Turn</th><th>Speaker</th>{heads}<th></th><th>Fell short</th>"
+            "<th>Turn effect (measured items)</th></tr>"
             + "".join(rows) + "</table>")
 
 
@@ -3437,6 +3529,35 @@ def _end_stake_cell(entry) -> str:
         return "–"
     return "{:+.3f} (mean {:+.3f}, {} turn{})".format(
         entry["score"], entry["mean"], judged, "" if judged == 1 else "s")
+
+
+def _end_read_cell(entry) -> str:
+    """One speaker's end read on one stake: mean and the three reads."""
+    entry = entry or {}
+    mean = entry.get("mean")
+    if mean is None:
+        return "–"
+    scores = entry.get("scores", entry.get("reads", [])) or []
+    parts = []
+    for v in scores:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            parts.append(f"{float(v):.1f}")
+        else:
+            parts.append("–")
+    if parts:
+        return f"{float(mean):.1f} (reads {', '.join(parts)})"
+    return f"{float(mean):.1f}"
+
+
+def _end_gap_cell(value) -> str:
+    """One speaker's end value on one item; a dash when absent."""
+    if value is None:
+        return "–"
+    if isinstance(value, bool):
+        return "–"
+    if not isinstance(value, (int, float)):
+        return "–"
+    return f"{float(value):+.3f}"
 
 
 def _is_estimate(source) -> bool:
@@ -3681,6 +3802,62 @@ def render_html(report) -> str:
         balance_table = ("<table>"
                          "<tr><th>Speaker</th><th>Balance</th><th>Basis</th></tr>"
                          + "".join(balance_rows) + "</table>")
+    end_read_html = ""
+    if any(isinstance(sp, dict) and isinstance(sp.get("end_read"), dict) for sp in stake_rows):
+        heads = "".join(f"<th>{esc(a)}</th>" for a in STAKES)
+        rows_read = []
+        settled_notes = []
+        for sp in stake_rows:
+            end_read = sp.get("end_read") or {}
+            stakes = end_read.get("stakes") or {}
+            cells = "".join("<td>{}</td>".format(esc(_end_read_cell(stakes.get(a)))) for a in STAKES)
+            rows_read.append(
+                "<tr><td>{speaker}</td><td>{source}</td>{cells}</tr>".format(
+                    speaker=esc(str(sp.get("speaker", "?"))),
+                    source=esc(str(end_read.get("goal_source", ""))),
+                    cells=cells))
+            settled = end_read.get("settled") or []
+            if isinstance(settled, list) and settled:
+                parts = []
+                for row_set in settled:
+                    if not isinstance(row_set, dict):
+                        continue
+                    item = str(row_set.get("item", ""))
+                    sg = row_set.get("speaker_gets")
+                    og = row_set.get("others_get")
+                    sg_txt = "–" if sg is None else str(sg)
+                    og_txt = "–" if og is None else str(og)
+                    parts.append(f"{item}: this speaker gets {sg_txt}, others get {og_txt}")
+                if parts:
+                    settled_notes.append(
+                        "<p>{}: settled: {}.</p>".format(
+                            esc(str(sp.get("speaker", "?"))), esc("; ".join(parts))))
+        end_read_html = (
+            "<p>End read by stake, from three reads of the finished conversation. "
+            "Each cell is the mean and the three reads. Goal source is record "
+            "when the case record gives a goal, else none.</p>"
+            "<table><tr><th>Speaker</th><th>Goal source</th>" + heads + "</tr>"
+            + "".join(rows_read) + "</table>" + "".join(settled_notes))
+    end_gaps_html = ""
+    gap_items = ["deliverable", "warmth", "competence", "facts"]
+    extra = sorted({k for sp in stake_rows for k in ((sp.get("end_gaps") or {}).keys())
+                    if k not in gap_items})
+    gap_items = [i for i in gap_items if any(i in (sp.get("end_gaps") or {}) for sp in stake_rows)] + extra
+    if gap_items:
+        gap_heads = "".join(f"<th>{esc(i)}</th>" for i in gap_items)
+        gap_rows = "".join(
+            "<tr><td>{}</td>{}</tr>".format(
+                esc(str(sp.get("speaker", "?"))),
+                "".join("<td>{}</td>".format(esc(_end_gap_cell((sp.get("end_gaps") or {}).get(i))))
+                        for i in gap_items))
+            for sp in stake_rows)
+        end_gaps_html = (
+            "<p>End values by item. Each value is the mean of actual minus wanted, "
+            "against a calm reference, divided by 100. A dash means no judged turn. "
+            "Items are never merged into one number.</p>"
+            "<table><tr><th>Speaker</th>" + gap_heads + "</tr>" + gap_rows + "</table>")
+    elif any(isinstance(sp, dict) and "end_gaps" in sp for sp in stake_rows):
+        end_gaps_html = "<p>No per-item end values on record.</p>"
     alt_blocks = []
     quote = str(decisive.get("quote", ""))
     read_prob = decisive.get("read_prob")
@@ -3809,6 +3986,7 @@ blockquote {{ border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; }}
 </section>
 <section id="alerts">
 <h2>4. Alert timeline</h2>
+<p>Alerts and broken marks are reference only; see the <a href="#reliability">reliability section</a> for why.</p>
 <p>Each alert is one stake where what the speaker wanted and what
 happened diverged (missed, partly, or cost), judged after the reply
 is seen. For each turn: what was wanted on this stake, and what the
@@ -3856,6 +4034,8 @@ wanted effect happened; minus means it did not.</p>
 {speaker_position_html}
 {balance_intro}
 {balance_table}
+{end_read_html}
+{end_gaps_html}
 </section>
 <section id="reliability">
 <h2>9. How much to trust this</h2>
