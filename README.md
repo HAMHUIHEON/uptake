@@ -191,3 +191,7 @@ uptake-eval-moves --casino <casino-dir> --n 30 --out eval.json
   utterance, not the person.
 - For recorded conversations only, not advice. Record only conversations
   you take part in, and get consent first.
+
+## Author
+
+YOON SEUNGMI (seungmi0723@naver.com) — built for the Meta Global AI Developer Hackathon (Oct 27 – Nov 5, 2026).

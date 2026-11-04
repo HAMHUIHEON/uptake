@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "misreading-forecaster"
 version = "0.1.0"
+authors = [{ name = "YOON SEUNGMI", email = "seungmi0723@naver.com" }]
 requires-python = ">=3.11"
 dependencies = ["openai", "pytest", "truststore"]
 
