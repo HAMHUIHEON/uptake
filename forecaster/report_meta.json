@@ -60,6 +60,12 @@
     "title_en": "CaSiNo 243 — control negotiation",
     "outcome_en": "Everyday trading over camp supplies (control dialogue; nothing at stake)."
   },
+  "dipl_unsc_8105_20171116": {
+    "domain": "diplomacy",
+    "result_type": "deadlock",
+    "title_en": "UN Security Council meeting 8105 (2017-11-16) — vote on renewing the Syria chemical-weapons Joint Investigative Mechanism (JIM)",
+    "outcome_en": "A procedural motion to change the voting order failed 3–7–5. The US-led draft S/2017/962 drew 11 in favour, 2 against and 2 abstentions but failed on a permanent member's negative vote. Draft S/2017/968, retabled under Bolivia's name, failed 4–7–4. The next day (2017-11-17, S/PV.8107) another draft failed 12–2–1, and that record notes the JIM mandate expired that night."
+  },
   "evidence": {
     "end_read": "End read on the outcome stake against the speaker's own goal: self-reported satisfaction +0.41 (+0.28 to +0.53), deal points +0.31 (+0.18 to +0.43, second attempt; the first design scored +0.18), wrong-goal control +0.08 and +0.04. Measured on 100 negotiation conversations with deals only.",
     "partner_effect": "Effect of the other speaker's turns on warmth and trust against own liking of them: +0.39 (+0.25 to +0.52), control -0.05. Measured on 100 negotiation conversations.",
